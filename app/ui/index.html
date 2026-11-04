@@ -54,6 +54,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;heigh
 body.detail .box{background:var(--accent);border-color:var(--accent)}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .wide{grid-column:span 2;border-color:var(--accent)}
+.span2{grid-column:span 2}
 .num{width:24px;height:24px;border-radius:12px;background:var(--raised);color:var(--muted);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .wide .num{background:var(--accent);color:var(--bg)}
 .cardtitle{font-size:15px;font-weight:700;flex:1}
@@ -88,8 +89,8 @@ body.detail .box{background:var(--accent);border-color:var(--accent)}
 
   <div class="card">
     <div class="row between"><span class="label">你的声音</span><span class="status" id="status"><span class="dot"></span><span id="statusText">等待麦克风…</span></span></div>
-    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输入</span><canvas id="mIn" height="40"></canvas></div>
-    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输出</span><canvas id="mOut" height="40"></canvas></div>
+    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输入</span><canvas id="mIn" height="40" style="flex:1;min-width:0"></canvas></div>
+    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输出</span><canvas id="mOut" height="40" style="flex:1;min-width:0"></canvas></div>
     <div class="row between small" style="padding-left:54px"><span id="inDb">输入 — dB</span><span id="aiText">AI 降噪</span><span id="outDb">输出 — dB</span></div>
   </div>
 
@@ -156,7 +157,7 @@ let M = {};     // meters / analysis
 
 // ---------------------------------------------------------------- stages
 const STAGES = [ // index = UserParams.stageOn index
-  {k:1, name:'AI 降噪', title:'AI 降噪', desc:'键盘、风扇、空调、电流声一次去掉，只留人声。强度拉满时，不说话就完全静音', vis:'denoise'},
+  {k:1, name:'AI 降噪', title:'AI 降噪', span2:true, desc:'键盘、风扇、空调、电流声一次去掉，只留人声。强度拉满时，不说话就完全静音', vis:'denoise'},
   {k:2, name:'补高频', title:'AI 音质修复', desc:'自动检测麦克风有没有丢高频（很多耳机麦、无线、蓝牙麦会丢），丢了才补回来，听着像高码率', vis:'restore'},
   {k:3, name:'智能优化', title:'智能声音优化', wide:true, desc:'先听你说话，分析你的嗓音，找出发闷、刺耳、嘶声、箱音，一处一处自动修好', vis:'optimize'},
   {k:4, name:'质感', title:'质感', desc:'让声音饱满、有厚度、有空气感，像好麦克风录出来的', vis:'texture'},
@@ -185,7 +186,7 @@ function paramButton(label, cmd){const b=el('button',{class:'btn',style:'flex:1;
 function buildCards(){
   const box=document.getElementById('cards'); box.innerHTML='';
   STAGES.forEach(st=>{
-    const c=el('div',{class:'card'+(st.wide?' wide':'')}); c.dataset.stage=st.k;
+    const c=el('div',{class:'card'+(st.wide?' wide':'')+(st.span2?' span2':'')}); c.dataset.stage=st.k;
     const head=el('div',{class:'row'}); head.append(el('span',{class:'num'},st.k), el('span',{class:'cardtitle'},st.title));
     const sw=el('button',{class:'mini','aria-label':'开关：'+st.title},'<i></i>');
     sw.onclick=()=>{S['stage.'+st.k]=S['stage.'+st.k]?0:1; send('set','stage.'+st.k,S['stage.'+st.k]); refreshStages()};
@@ -248,7 +249,12 @@ function showRec(){
 // ---------------------------------------------------------------- drawing
 const C=getComputedStyle(document.documentElement);
 const col=n=>C.getPropertyValue(n).trim();
-function prep(cv){const r=cv.getBoundingClientRect();const dpr=devicePixelRatio||1;cv.width=Math.max(1,r.width*dpr);cv.height=(+cv.getAttribute('height'))*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);return [g,r.width,+cv.getAttribute('height')]}
+// Size a canvas for sharp drawing on high-DPI screens. The CSS height comes from the
+// original height attribute, remembered once: setting cv.height rewrites that attribute, so
+// reading it back would make the canvas grow on every redraw (it did, on 200% scaling).
+function prep(cv){if(!cv.dataset.h)cv.dataset.h=cv.getAttribute('height');const hc=+cv.dataset.h;cv.style.height=hc+'px';
+  const r=cv.getBoundingClientRect();const dpr=window.devicePixelRatio||1;const W=Math.max(1,Math.round(r.width*dpr)),H=Math.round(hc*dpr);
+  if(cv.width!==W)cv.width=W;if(cv.height!==H)cv.height=H;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,r.width,hc);return [g,r.width,hc]}
 const hist={in:new Array(44).fill(-90),out:new Array(44).fill(-90)};
 function drawMeter(id,arr,color){const cv=document.getElementById(id);const [g,w,h]=prep(cv);const n=arr.length,bw=w/n;
   arr.forEach((db,i)=>{const v=Math.max(0,Math.min(1,(db+70)/70));const bh=Math.max(2,v*h);g.fillStyle=color;g.fillRect(i*bw+1,(h-bh)/2,bw-2,bh)})}
@@ -307,7 +313,7 @@ function onMeters(m){M=m;
   else{st.style.color=col('--good');document.getElementById('statusText').textContent=S&&S.enabled?'正在处理':'已暂停';}
   document.getElementById('inDb').textContent='输入 '+(m.running?m.in.toFixed(0):'—')+' dB';
   document.getElementById('outDb').textContent='输出 '+(m.running?m.out.toFixed(0):'—')+' dB';
-  document.getElementById('aiText').textContent=m.ai?'AI 降噪 · CPU '+(m.load*100).toFixed(0)+'%':'AI 降噪未运行';
+  document.getElementById('aiText').textContent=!m.running?'等待麦克风':(m.ai?'AI 降噪 · CPU '+(m.load*100).toFixed(0)+'%':'AI 降噪未运行');
   const w=document.getElementById('warn');w.textContent=PROBLEM[m.problem]||'';w.style.display=m.problem?'block':'none';
   const set=(id,t)=>{const e=document.getElementById(id);if(e)e.textContent=t};
   set('cutoffText',m.rate<32000?('麦克风格式 '+m.rate/1000+'kHz，无法补'):m.cutoff>0&&m.cutoff<11000?('只到 '+(m.cutoff/1000).toFixed(1)+'kHz，正在补'):'不缺高频');
