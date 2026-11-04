@@ -46,6 +46,9 @@ jobs:
         shell: bash
         run: WV_AI_LIB="$PWD/build/Release/warmvoice_ai.dll" build/Release/wvtests.exe
 
+      - name: APO loaded like Windows does (aggregation, format, process)
+        run: build\Release\apohosttest.exe build\Release\WarmVoiceApo.dll
+
       - name: End-to-end listening test with the real AI
         shell: bash
         run: |

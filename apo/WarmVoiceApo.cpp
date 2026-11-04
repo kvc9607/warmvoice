@@ -37,7 +37,7 @@ using namespace wv;
 static HMODULE g_module = nullptr;
 // Diagnostics: %ProgramData%\WarmVoice\apo.log (only on setup calls, never per audio block).
 #define WV_LOG(...) wv::logTo(L"apo.log", __VA_ARGS__)
-static std::atomic<long> g_objects{0}, g_locks{0};
+static std::atomic<long> g_objects{0}, g_locks{0}, g_creates{0};
 
 // {1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},4  - endpoint GUID string
 static const PROPERTYKEY kPkeyEndpointGuid = {{0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 4};
@@ -47,33 +47,61 @@ class WarmVoiceApo final : public IAudioProcessingObject,
                            public IAudioProcessingObjectConfiguration,
                            public IAudioSystemEffects2 {
 public:
-    WarmVoiceApo() { ++g_objects; }
+    // The Windows audio engine creates APOs with COM aggregation (it passes an outer object),
+    // so all IUnknown calls on our interfaces go to the "outer" object; the object's own
+    // reference count lives in the separate non-delegating "inner" IUnknown below.
+    explicit WarmVoiceApo(IUnknown* outer) : outer_(outer ? outer : &inner_) {
+        inner_.self = this;
+        ++g_objects;
+    }
     ~WarmVoiceApo() {
         closeShared();
         --g_objects;
     }
 
-    // ---- IUnknown ----
-    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+    struct Inner final : IUnknown {
+        WarmVoiceApo* self = nullptr;
+        std::atomic<long> refs{1};
+        STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override { return self->innerQI(riid, ppv); }
+        STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)++refs; }
+        STDMETHODIMP_(ULONG) Release() override {
+            const long r = --refs;
+            if (r == 0) delete self;
+            return (ULONG)r;
+        }
+    };
+    IUnknown* inner() { return &inner_; }
+
+    HRESULT innerQI(REFIID riid, void** ppv) {
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
-        if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioProcessingObject))
-            *ppv = static_cast<IAudioProcessingObject*>(this);
+        if (riid == __uuidof(IUnknown)) {
+            *ppv = static_cast<IUnknown*>(&inner_);
+            inner_.AddRef();
+            return S_OK;
+        }
+        if (riid == __uuidof(IAudioProcessingObject)) *ppv = static_cast<IAudioProcessingObject*>(this);
         else if (riid == __uuidof(IAudioProcessingObjectRT)) *ppv = static_cast<IAudioProcessingObjectRT*>(this);
         else if (riid == __uuidof(IAudioProcessingObjectConfiguration))
             *ppv = static_cast<IAudioProcessingObjectConfiguration*>(this);
         else if (riid == __uuidof(IAudioSystemEffects) || riid == __uuidof(IAudioSystemEffects2))
             *ppv = static_cast<IAudioSystemEffects2*>(this);
-        else return E_NOINTERFACE;
-        AddRef();
+        else {
+            if (++unknownQi_ <= 12) {
+                wchar_t g[64] = {};
+                StringFromGUID2(riid, g, 64);
+                WV_LOG("asked for interface %ls: not supported", g);
+            }
+            return E_NOINTERFACE;
+        }
+        static_cast<IUnknown*>(*ppv)->AddRef();   // goes to the outer object, as COM requires
         return S_OK;
     }
-    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)++refs_; }
-    STDMETHODIMP_(ULONG) Release() override {
-        const long r = --refs_;
-        if (r == 0) delete this;
-        return (ULONG)r;
-    }
+
+    // ---- IUnknown of every interface: delegate ----
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override { return outer_->QueryInterface(riid, ppv); }
+    STDMETHODIMP_(ULONG) AddRef() override { return outer_->AddRef(); }
+    STDMETHODIMP_(ULONG) Release() override { return outer_->Release(); }
 
     // ---- IAudioProcessingObject ----
     STDMETHODIMP Reset() override {
@@ -104,6 +132,7 @@ public:
         p->u32NumAPOInterfaces = 1;
         p->iidAPOInterfaceList[0] = __uuidof(IAudioProcessingObject);
         *pp = p;
+        WV_LOG("GetRegistrationProperties");
         return S_OK;
     }
     STDMETHODIMP Initialize(UINT32 cbDataSize, BYTE* pbyData) override {
@@ -345,7 +374,9 @@ private:
         seqWrite(shared_->analysisSeq, shared_->analysis, analysis_);
     }
 
-    std::atomic<long> refs_{1};
+    Inner inner_;
+    IUnknown* outer_;
+    int unknownQi_ = 0;
     std::unique_ptr<Pipeline> pipeline_;
     int rate_ = 48000, channels_ = 1;
     bool locked_ = false;
@@ -374,11 +405,14 @@ public:
     STDMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
         *ppv = nullptr;
-        if (outer) return CLASS_E_NOAGGREGATION;
-        auto* apo = new (std::nothrow) WarmVoiceApo();
+        // Aggregated creation must ask for IUnknown (COM rule); the audio engine does.
+        if (outer && riid != __uuidof(IUnknown)) { WV_LOG("CreateInstance: aggregated but not IUnknown"); return CLASS_E_NOAGGREGATION; }
+        auto* apo = new (std::nothrow) WarmVoiceApo(outer);
         if (!apo) return E_OUTOFMEMORY;
-        const HRESULT hr = apo->QueryInterface(riid, ppv);
-        apo->Release();
+        IUnknown* in = apo->inner();
+        const HRESULT hr = in->QueryInterface(riid, ppv);
+        in->Release();   // drop the creation reference; the caller now holds its own
+        if (++g_creates <= 6) WV_LOG("CreateInstance: %s, result 0x%08lx", outer ? "aggregated" : "plain", (unsigned long)hr);
         return hr;
     }
     STDMETHODIMP LockServer(BOOL lock) override {
@@ -400,7 +434,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
 }
 
 STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** ppv) {
-    if (clsid != CLSID_WarmVoiceApo) return CLASS_E_CLASSNOTAVAILABLE;
+    if (clsid != CLSID_WarmVoiceApo) { WV_LOG("DllGetClassObject: unknown class"); return CLASS_E_CLASSNOTAVAILABLE; }
     return g_factory.QueryInterface(riid, ppv);
 }
 

@@ -633,10 +633,11 @@ static int install(const Endpoint& e, const std::wstring& slotArg) {
             return 3;
         }
     }
-    // Nothing worked: leave the first slot in place (harmless) and say so.
-    if (slots.size() > 1) { applySlot(e, slots[0]); restartAudioService(); }
-    say(L"\n没成功：三种方式 Windows 都没让暖声处理这个麦克风。详细记录已保存，发给开发者即可。\n");
+    // Nothing worked: put the microphone back exactly as it was, so it keeps working normally.
     dumpFx(e);
+    uninstall(e);
+    restartAudioService();
+    say(L"\n没成功：三种方式 Windows 都没让暖声处理这个麦克风。已经把麦克风恢复原样，照常能用。\n");
     return 4;
 }
 

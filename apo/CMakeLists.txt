@@ -17,3 +17,9 @@ if(MSVC)
   # ask for administrator rights when started
   set_property(TARGET wvinstall APPEND PROPERTY LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
 endif()
+
+# Stand-in for the Windows audio engine: loads the APO the way audiodg.exe does (with COM
+# aggregation) and pushes audio through it. Run by CI.
+add_executable(apohosttest ${PROJECT_SOURCE_DIR}/tests/apo_host_test.cpp)
+target_link_libraries(apohosttest PRIVATE ole32 uuid advapi32)
+target_include_directories(apohosttest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/core/include)
