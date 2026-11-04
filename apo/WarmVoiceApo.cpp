@@ -12,6 +12,7 @@
 #include <audioenginebaseapo.h>
 #include <audioengineextensionapo.h>
 #include <mmdeviceapi.h>
+#include <olectl.h>   // SELFREG_E_CLASS
 #include <functiondiscoverykeys_devpkey.h>
 #include <ks.h>
 #include <ksmedia.h>
