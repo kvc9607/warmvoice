@@ -1,6 +1,7 @@
 // wvinstall: put the WarmVoice APO on a microphone (run as administrator).
 //
 //   wvinstall list                      microphones, their format and WarmVoice status
+//   <n|id> can also be "default": the microphone Windows currently uses by default
 //   wvinstall install <n|id> [--slot efx|mfx|sfx]   default slot: efx (shared by all apps, works for raw streams)
 //   wvinstall uninstall <n|id|all>      restore what was there before
 //   wvinstall status <n|id>             is the APO actually running? (needs audio flowing)
@@ -307,7 +308,21 @@ int wmain(int argc, wchar_t** argv) {
     std::vector<const Endpoint*> targets;
     if (argc >= 3) {
         const std::wstring sel = argv[2];
+        std::wstring defId;
+        if (sel == L"default") {
+            IMMDeviceEnumerator* en = nullptr;
+            if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en)))) {
+                IMMDevice* dev = nullptr;
+                if (SUCCEEDED(en->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) {
+                    LPWSTR id = nullptr;
+                    if (SUCCEEDED(dev->GetId(&id))) { defId = id; CoTaskMemFree(id); }
+                    dev->Release();
+                }
+                en->Release();
+            }
+        }
         if (sel == L"all") for (auto& e : eps) targets.push_back(&e);
+        else if (sel == L"default") { for (auto& e : eps) if (e.id == defId) targets.push_back(&e); }
         else {
             for (size_t i = 0; i < eps.size(); ++i)
                 if (sel == std::to_wstring(i) || sel == eps[i].id || sel == eps[i].guid) targets.push_back(&eps[i]);

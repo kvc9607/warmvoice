@@ -3,6 +3,8 @@
 # the real AI, then runs the whole chain on test recordings and publishes the results.
 name: build
 on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: write   # to publish the test build as a release
 env:
   DFN_COMMIT: d375b2d8309e0935d165700c91da9de862a99c31   # the commit dfn/libdf-hook.patch is made against
 jobs:
@@ -39,6 +41,26 @@ jobs:
           python -m pip install --quiet numpy scipy
           scripts/e2e.sh build/Release/wvproc.exe "$PWD/build/Release/warmvoice_ai.dll" \
             dfn-src/assets/clean_freesound_33711.wav e2e | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Package one-click installer
+        shell: bash
+        run: |
+          mkdir -p pkg/WarmVoice
+          cp build/Release/WarmVoiceApo.dll build/Release/warmvoice_ai.dll build/Release/wvinstall.exe build/Release/wvproc.exe pkg/WarmVoice/
+          cp packaging/install.bat packaging/uninstall.bat "packaging/说明.txt" pkg/WarmVoice/
+          cp LICENSE THIRD_PARTY.md pkg/WarmVoice/
+          cd pkg && 7z a -tzip ../WarmVoice-windows-x64.zip WarmVoice >/dev/null
+
+      - name: Publish test build (release "latest")
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest WarmVoice-windows-x64.zip e2e/metrics.md --prerelease \
+            --title "WarmVoice test build ($(git rev-parse --short HEAD))" \
+            --notes "Automatic test build from main. Download WarmVoice-windows-x64.zip, unzip, double-click install.bat."
 
       - uses: actions/upload-artifact@v4
         with:

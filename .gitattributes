@@ -3,3 +3,4 @@
 *.py text eol=lf
 *.patch -text
 *.wav binary
+*.bat text eol=crlf
