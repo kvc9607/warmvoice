@@ -78,7 +78,7 @@ private:
     float mixWet_ = 1.0f;
     // meters / watchdog
     float inPeak_ = 0, inSpeechDb_ = -120, noiseDb_ = -120, outDb_ = -120, loadEma_ = 0;
-    int slowHops_ = 0;
+    int slowHops_ = 0, speechHold_ = 0;
     StageTiming timing_;
 };
 

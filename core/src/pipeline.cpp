@@ -63,6 +63,7 @@ void Pipeline::reset() {
     outCount_ = (int)std::ceil((double)kHop * rate_ / kFs) + 4;
     std::fill(outFifo_.begin(), outFifo_.begin() + outCount_, 0.0f);
     aiFailed_ = aiSlow_ = overloaded_ = speech_ = false;
+    speechHold_ = 0;
     aiProblem_ = ai_ ? 0 : 1;
     slowHops_ = 0;
     loadEma_ = 0;
@@ -168,6 +169,12 @@ void Pipeline::processHop(float* x) {
         }
         speech_ = hopDb > -50.0f;
     }
+    // The AI flags only confident speech frames; the quieter syllables and word endings right
+    // after them are speech too. The leveller counts them (200 ms hold) so its level matches
+    // what a listener hears over the whole phrase.
+    if (speech_) speechHold_ = 20;
+    else if (speechHold_ > 0) --speechHold_;
+    const bool phrase = speech_ || speechHold_ > 0;
     if (speech_) inSpeechDb_ += 0.02f * (hopDb - inSpeechDb_);
     else noiseDb_ += 0.02f * (hopDb - noiseDb_);
     const auto t1 = Clock::now();
@@ -184,7 +191,7 @@ void Pipeline::processHop(float* x) {
     texture_.process(y, kHop);
     const auto t4 = Clock::now();
     // 5 dynamics
-    dyn_.process(y, kHop, speech_);
+    dyn_.process(y, kHop, phrase);
     const auto t5 = Clock::now();
 
     // on/off cross-fade with the equally delayed raw signal
