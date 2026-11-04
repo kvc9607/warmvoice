@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <initguid.h>
 #include <audioclient.h>
+#include <propkeydef.h>   // DEFINE_PROPERTYKEY, needed before the devpkey header
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <shellapi.h>
