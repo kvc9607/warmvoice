@@ -1,0 +1,406 @@
+// WarmVoice capture APO. Loaded by the Windows audio engine (audiodg.exe) for the microphone
+// endpoints it is installed on, preferably as an endpoint effect (EFX): EFX runs once per
+// microphone - shared by every app using it - and is applied even to "raw" streams.
+//
+// Real-time rules followed here: APOProcess never allocates, locks, waits or calls COM.
+// Everything that allocates happens in LockForProcess.
+// SPDX-License-Identifier: MIT
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <initguid.h>   // instantiate the SDK GUID / PROPERTYKEY constants used below
+#include <audioenginebaseapo.h>
+#include <audioengineextensionapo.h>
+#include <mmdeviceapi.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <ks.h>
+#include <ksmedia.h>
+#include <propvarutil.h>
+#include <sddl.h>
+
+#include <atomic>
+#include <memory>
+#include <new>
+#include <string>
+
+#include "guids.h"
+#include "wv/pipeline.h"
+#include "wv/resolve.h"
+#include "wv/shared.h"
+
+using namespace wv;
+
+static HMODULE g_module = nullptr;
+static std::atomic<long> g_objects{0}, g_locks{0};
+
+// {1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},4  - endpoint GUID string
+static const PROPERTYKEY kPkeyEndpointGuid = {{0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 4};
+
+class WarmVoiceApo final : public IAudioProcessingObject,
+                           public IAudioProcessingObjectRT,
+                           public IAudioProcessingObjectConfiguration,
+                           public IAudioSystemEffects2 {
+public:
+    WarmVoiceApo() { ++g_objects; }
+    ~WarmVoiceApo() {
+        closeShared();
+        --g_objects;
+    }
+
+    // ---- IUnknown ----
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        *ppv = nullptr;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IAudioProcessingObject))
+            *ppv = static_cast<IAudioProcessingObject*>(this);
+        else if (riid == __uuidof(IAudioProcessingObjectRT)) *ppv = static_cast<IAudioProcessingObjectRT*>(this);
+        else if (riid == __uuidof(IAudioProcessingObjectConfiguration))
+            *ppv = static_cast<IAudioProcessingObjectConfiguration*>(this);
+        else if (riid == __uuidof(IAudioSystemEffects) || riid == __uuidof(IAudioSystemEffects2))
+            *ppv = static_cast<IAudioSystemEffects2*>(this);
+        else return E_NOINTERFACE;
+        AddRef();
+        return S_OK;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)++refs_; }
+    STDMETHODIMP_(ULONG) Release() override {
+        const long r = --refs_;
+        if (r == 0) delete this;
+        return (ULONG)r;
+    }
+
+    // ---- IAudioProcessingObject ----
+    STDMETHODIMP Reset() override {
+        if (pipeline_) pipeline_->reset();
+        return S_OK;
+    }
+    STDMETHODIMP GetLatency(HNSTIME* t) override {
+        if (!t) return E_POINTER;
+        *t = (pipeline_ && rate_ > 0) ? (HNSTIME)(10000000.0 * pipeline_->latencyFrames() / rate_) : 0;
+        return S_OK;
+    }
+    STDMETHODIMP GetRegistrationProperties(APO_REG_PROPERTIES** pp) override {
+        if (!pp) return E_POINTER;
+        auto* p = (APO_REG_PROPERTIES*)CoTaskMemAlloc(sizeof(APO_REG_PROPERTIES));
+        if (!p) return E_OUTOFMEMORY;
+        ZeroMemory(p, sizeof(*p));
+        p->clsid = CLSID_WarmVoiceApo;
+        p->Flags = APO_FLAG_DEFAULT;
+        wcscpy_s(p->szFriendlyName, WV_APO_NAME);
+        wcscpy_s(p->szCopyrightInfo, L"MIT License");
+        p->u32MajorVersion = 0;
+        p->u32MinorVersion = 1;
+        p->u32MinInputConnections = 1;
+        p->u32MaxInputConnections = 1;
+        p->u32MinOutputConnections = 1;
+        p->u32MaxOutputConnections = 1;
+        p->u32MaxInstances = 0xffffffff;
+        p->u32NumAPOInterfaces = 1;
+        p->iidAPOInterfaceList[0] = __uuidof(IAudioProcessingObject);
+        *pp = p;
+        return S_OK;
+    }
+    STDMETHODIMP Initialize(UINT32 cbDataSize, BYTE* pbyData) override {
+        // Remember which endpoint we serve, to name the shared-memory block.
+        endpointGuid_.clear();
+        if (pbyData && cbDataSize >= sizeof(APOInitSystemEffects2)) {
+            auto* init = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
+            if (init->InitializeForDiscoveryOnly) return S_OK;
+            readEndpointGuid(init->pAPOEndpointProperties);
+        } else if (pbyData && cbDataSize >= sizeof(APOInitSystemEffects)) {
+            readEndpointGuid(reinterpret_cast<APOInitSystemEffects*>(pbyData)->pAPOEndpointProperties);
+        }
+        return S_OK;
+    }
+    STDMETHODIMP IsInputFormatSupported(IAudioMediaType* opposite, IAudioMediaType* requested,
+                                        IAudioMediaType** supported) override {
+        return checkFormat(opposite, requested, supported);
+    }
+    STDMETHODIMP IsOutputFormatSupported(IAudioMediaType* opposite, IAudioMediaType* requested,
+                                         IAudioMediaType** supported) override {
+        return checkFormat(opposite, requested, supported);
+    }
+    STDMETHODIMP GetInputChannelCount(UINT32* n) override {
+        if (!n) return E_POINTER;
+        *n = (UINT32)channels_;
+        return S_OK;
+    }
+
+    // ---- IAudioProcessingObjectConfiguration ----
+    STDMETHODIMP LockForProcess(UINT32 nIn, APO_CONNECTION_DESCRIPTOR** in, UINT32 nOut,
+                                APO_CONNECTION_DESCRIPTOR** out) override {
+        if (nIn != 1 || nOut != 1 || !in || !out || !in[0]->pFormat) return E_INVALIDARG;
+        UNCOMPRESSEDAUDIOFORMAT f{};
+        HRESULT hr = in[0]->pFormat->GetUncompressedAudioFormat(&f);
+        if (FAILED(hr)) return hr;
+        if (f.guidFormatType != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT || f.dwBytesPerSampleContainer != 4)
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        rate_ = (int)(f.fFramesPerSecond + 0.5f);
+        channels_ = (int)f.dwSamplesPerFrame;
+        try {
+            pipeline_ = std::make_unique<Pipeline>();
+            PipelineOptions opt;
+            opt.aiLibraryPath = moduleDir() + "warmvoice_ai.dll";
+            pipeline_->configure(rate_, channels_, opt);
+        } catch (...) {
+            pipeline_.reset();
+            return E_OUTOFMEMORY;
+        }
+        // Until the app sends settings, run the defaults (warm tone, everything on).
+        UserParams u;
+        Analysis a;
+        a.inputRate = rate_;
+        pipeline_->setParams(resolve(u, a));
+        openShared();
+        locked_ = true;
+        return S_OK;
+    }
+    STDMETHODIMP UnlockForProcess() override {
+        locked_ = false;
+        closeShared();
+        pipeline_.reset();
+        return S_OK;
+    }
+
+    // ---- IAudioProcessingObjectRT ----
+    STDMETHODIMP_(void) APOProcess(UINT32 nIn, APO_CONNECTION_PROPERTY** in, UINT32 nOut,
+                                   APO_CONNECTION_PROPERTY** out) override {
+        if (nIn != 1 || nOut != 1) return;
+        APO_CONNECTION_PROPERTY* ip = in[0];
+        APO_CONNECTION_PROPERTY* op = out[0];
+        const UINT32 frames = ip->u32ValidFrameCount;
+        float* src = reinterpret_cast<float*>(ip->pBuffer);
+        float* dst = reinterpret_cast<float*>(op->pBuffer);
+        const size_t samples = (size_t)frames * channels_;
+        if (ip->u32BufferFlags == BUFFER_SILENT) ZeroMemory(dst, samples * sizeof(float));
+        else if (dst != src) CopyMemory(dst, src, samples * sizeof(float));
+
+        if (pipeline_ && locked_) {
+            pollParams();
+            tapRaw(dst, frames);
+            pipeline_->process(dst, (int)frames);
+            publishAnalysis();
+        }
+        op->u32ValidFrameCount = frames;
+        op->u32BufferFlags = BUFFER_VALID;
+    }
+    STDMETHODIMP_(UINT32) CalcInputFrames(UINT32 n) override { return n; }
+    STDMETHODIMP_(UINT32) CalcOutputFrames(UINT32 n) override { return n; }
+
+    // ---- IAudioSystemEffects2 ----
+    STDMETHODIMP GetEffectsList(LPGUID* ids, UINT* count, HANDLE) override {
+        if (!ids || !count) return E_POINTER;
+        *ids = nullptr;
+        *count = 0;   // no individually switchable Windows "effects"; the app controls everything
+        return S_OK;
+    }
+
+private:
+    static std::string moduleDir() {
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(g_module, path, MAX_PATH);
+        std::string s(path);
+        const size_t p = s.find_last_of("\\/");
+        return p == std::string::npos ? std::string() : s.substr(0, p + 1);
+    }
+
+    void readEndpointGuid(IPropertyStore* ps) {
+        if (!ps) return;
+        PROPVARIANT v;
+        PropVariantInit(&v);
+        if (SUCCEEDED(ps->GetValue(kPkeyEndpointGuid, &v)) && v.vt == VT_LPWSTR && v.pwszVal)
+            endpointGuid_ = v.pwszVal;
+        PropVariantClear(&v);
+    }
+
+    HRESULT checkFormat(IAudioMediaType* opposite, IAudioMediaType* requested, IAudioMediaType** supported) {
+        if (!requested || !supported) return E_POINTER;
+        *supported = nullptr;
+        UNCOMPRESSEDAUDIOFORMAT f{};
+        HRESULT hr = requested->GetUncompressedAudioFormat(&f);
+        if (FAILED(hr)) return hr;
+        const bool isFloat = f.guidFormatType == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT && f.dwBytesPerSampleContainer == 4;
+        const bool okShape = f.dwSamplesPerFrame >= 1 && f.dwSamplesPerFrame <= 16 && f.fFramesPerSecond >= 8000.0f &&
+                             f.fFramesPerSecond <= 384000.0f;
+        if (!isFloat || !okShape) return APOERR_FORMAT_NOT_SUPPORTED;
+        // In-place effect: input and output must match.
+        if (opposite) {
+            UNCOMPRESSEDAUDIOFORMAT o{};
+            if (SUCCEEDED(opposite->GetUncompressedAudioFormat(&o)) &&
+                (o.dwSamplesPerFrame != f.dwSamplesPerFrame || o.fFramesPerSecond != f.fFramesPerSecond))
+                return APOERR_FORMAT_NOT_SUPPORTED;
+        }
+        requested->AddRef();
+        *supported = requested;
+        return S_OK;
+    }
+
+    // ---- shared memory with the app ----
+    void openShared() {
+        closeShared();
+        std::wstring name = L"Global\\WarmVoice_" + (endpointGuid_.empty() ? std::wstring(L"default") : endpointGuid_);
+        // SYSTEM, LOCAL SERVICE (audiodg) and administrators: full; interactive users: read/write.
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, FALSE};
+        PSECURITY_DESCRIPTOR sd = nullptr;
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GRGW;;;IU)",
+                                                                 SDDL_REVISION_1, &sd, nullptr))
+            sa.lpSecurityDescriptor = sd;
+        mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, sd ? &sa : nullptr, PAGE_READWRITE, 0,
+                                      (DWORD)sizeof(SharedBlock), name.c_str());
+        const bool existed = mapping_ && GetLastError() == ERROR_ALREADY_EXISTS;
+        if (sd) LocalFree(sd);
+        if (!mapping_) return;
+        shared_ = (SharedBlock*)MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedBlock));
+        if (!shared_) { CloseHandle(mapping_); mapping_ = nullptr; return; }
+        if (!existed || shared_->magic != kSharedMagic || shared_->size != sizeof(SharedBlock)) {
+            ZeroMemory((void*)shared_, sizeof(SharedBlock));
+            shared_->size = sizeof(SharedBlock);
+            shared_->magic = kSharedMagic;
+        }
+        shared_->recordRate.store((uint32_t)rate_);
+        lastParamSeq_ = 0;
+    }
+    void closeShared() {
+        if (shared_) UnmapViewOfFile((void*)shared_);
+        if (mapping_) CloseHandle(mapping_);
+        shared_ = nullptr;
+        mapping_ = nullptr;
+    }
+    void pollParams() {
+        if (!shared_) return;
+        const uint32_t seq = shared_->paramSeq.load(std::memory_order_acquire);
+        if (seq != lastParamSeq_ && seq != 0) {
+            Resolved r;
+            uint32_t seen = 0;
+            if (seqRead(shared_->paramSeq, shared_->params, r, &seen) && r.version == Resolved().version) {
+                pipeline_->setParams(r);
+                lastParamSeq_ = seen;
+            }
+        }
+        const uint32_t rp = shared_->resetProfile.load(std::memory_order_relaxed);
+        if (rp != lastResetProfile_) { pipeline_->resetProfile(); lastResetProfile_ = rp; }
+    }
+    void tapRaw(const float* x, UINT32 frames) {
+        if (!shared_) return;
+        uint64_t w = shared_->recordWritten.load(std::memory_order_relaxed);
+        for (UINT32 i = 0; i < frames; ++i) {
+            float s = 0;
+            for (int c = 0; c < channels_; ++c) s += x[(size_t)i * channels_ + c];
+            shared_->record[w % kRecordCapacity] = s / (float)channels_;
+            ++w;
+        }
+        shared_->recordWritten.store(w, std::memory_order_release);
+    }
+    void publishAnalysis() {
+        if (!shared_) return;
+        shared_->heartbeat.fetch_add(1, std::memory_order_relaxed);
+        if (++analysisTick_ < 10) return;   // about every 100 ms
+        analysisTick_ = 0;
+        pipeline_->getAnalysis(analysis_);
+        seqWrite(shared_->analysisSeq, shared_->analysis, analysis_);
+    }
+
+    std::atomic<long> refs_{1};
+    std::unique_ptr<Pipeline> pipeline_;
+    int rate_ = 48000, channels_ = 1;
+    bool locked_ = false;
+    std::wstring endpointGuid_;
+    HANDLE mapping_ = nullptr;
+    SharedBlock* shared_ = nullptr;
+    uint32_t lastParamSeq_ = 0, lastResetProfile_ = 0;
+    int analysisTick_ = 0;
+    Analysis analysis_;
+};
+
+// ---------------------------------------------------------------------------- COM plumbing
+class Factory final : public IClassFactory {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IClassFactory)) { *ppv = this; AddRef(); return S_OK; }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return 2; }
+    STDMETHODIMP_(ULONG) Release() override { return 1; }
+    STDMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        *ppv = nullptr;
+        if (outer) return CLASS_E_NOAGGREGATION;
+        auto* apo = new (std::nothrow) WarmVoiceApo();
+        if (!apo) return E_OUTOFMEMORY;
+        const HRESULT hr = apo->QueryInterface(riid, ppv);
+        apo->Release();
+        return hr;
+    }
+    STDMETHODIMP LockServer(BOOL lock) override {
+        if (lock) ++g_locks; else --g_locks;
+        return S_OK;
+    }
+};
+static Factory g_factory;
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_module = h;
+        DisableThreadLibraryCalls(h);
+    }
+    return TRUE;
+}
+
+STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** ppv) {
+    if (clsid != CLSID_WarmVoiceApo) return CLASS_E_CLASSNOTAVAILABLE;
+    return g_factory.QueryInterface(riid, ppv);
+}
+
+STDAPI DllCanUnloadNow() { return (g_objects == 0 && g_locks == 0) ? S_OK : S_FALSE; }
+
+// Registration: COM class + Windows audio-engine APO entry. Installing the APO on a specific
+// microphone is done by wvinstall.exe (it needs the endpoint id and admin rights).
+static LONG setStr(HKEY k, const wchar_t* name, const std::wstring& v) {
+    return RegSetValueExW(k, name, 0, REG_SZ, (const BYTE*)v.c_str(), (DWORD)((v.size() + 1) * sizeof(wchar_t)));
+}
+static LONG setDword(HKEY k, const wchar_t* name, DWORD v) {
+    return RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+}
+
+STDAPI DllRegisterServer() {
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(g_module, path, MAX_PATH);
+    HKEY k;
+    std::wstring clsidKey = std::wstring(L"SOFTWARE\\Classes\\CLSID\\") + WV_CLSID_STRING;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, clsidKey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr)) return SELFREG_E_CLASS;
+    setStr(k, nullptr, WV_APO_NAME);
+    RegCloseKey(k);
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, (clsidKey + L"\\InprocServer32").c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr))
+        return SELFREG_E_CLASS;
+    setStr(k, nullptr, path);
+    setStr(k, L"ThreadingModel", L"Both");
+    RegCloseKey(k);
+
+    std::wstring apoKey = std::wstring(L"SOFTWARE\\Classes\\AudioEngine\\AudioProcessingObjects\\") + WV_CLSID_STRING;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, apoKey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr)) return SELFREG_E_CLASS;
+    setStr(k, L"FriendlyName", WV_APO_NAME);
+    setStr(k, L"Copyright", L"MIT License");
+    setDword(k, L"MajorVersion", 0);
+    setDword(k, L"MinorVersion", 1);
+    setDword(k, L"Flags", APO_FLAG_DEFAULT);
+    setDword(k, L"MinInputConnections", 1);
+    setDword(k, L"MaxInputConnections", 1);
+    setDword(k, L"MinOutputConnections", 1);
+    setDword(k, L"MaxOutputConnections", 1);
+    setDword(k, L"MaxInstances", 0xffffffff);
+    setDword(k, L"NumAPOInterfaces", 1);
+    wchar_t iid[64];
+    StringFromGUID2(__uuidof(IAudioProcessingObject), iid, 64);
+    setStr(k, L"APOInterface0", iid);
+    RegCloseKey(k);
+    return S_OK;
+}
+
+STDAPI DllUnregisterServer() {
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, (std::wstring(L"SOFTWARE\\Classes\\CLSID\\") + WV_CLSID_STRING).c_str());
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE,
+                   (std::wstring(L"SOFTWARE\\Classes\\AudioEngine\\AudioProcessingObjects\\") + WV_CLSID_STRING).c_str());
+    return S_OK;
+}

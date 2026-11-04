@@ -1,0 +1,61 @@
+# Builds everything on a Windows runner (the APO cannot be built on Linux), builds the AI
+# library (DeepFilterNet 3 + our hook patch), runs the unit tests with the stand-in AND with
+# the real AI, then runs the whole chain on test recordings and publishes the results.
+name: build
+on: [push, pull_request, workflow_dispatch]
+env:
+  DFN_COMMIT: d375b2d8309e0935d165700c91da9de862a99c31   # the commit dfn/libdf-hook.patch is made against
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build core, tools, tests, APO
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release
+
+      - name: Unit tests (AI stand-in)
+        run: build\Release\wvtests.exe
+
+      - name: Build AI library (DeepFilterNet 3 + WarmVoice hook patch)
+        shell: bash
+        run: |
+          git init dfn-src && cd dfn-src && git config core.autocrlf false
+          git remote add origin https://github.com/Rikorose/DeepFilterNet.git
+          git fetch --depth 1 origin "$DFN_COMMIT" && git checkout FETCH_HEAD
+          git apply ../dfn/libdf-hook.patch
+          cargo build --release -p deep_filter --features capi,default-model --lib
+          cp target/release/df.dll ../build/Release/warmvoice_ai.dll
+
+      - name: Unit tests (real AI)
+        shell: bash
+        run: WV_AI_LIB="$PWD/build/Release/warmvoice_ai.dll" build/Release/wvtests.exe
+
+      - name: End-to-end listening test with the real AI
+        shell: bash
+        run: |
+          python -m pip install --quiet numpy scipy
+          scripts/e2e.sh build/Release/wvproc.exe "$PWD/build/Release/warmvoice_ai.dll" \
+            dfn-src/assets/clean_freesound_33711.wav e2e | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warmvoice-windows-x64
+          path: |
+            build/Release/WarmVoiceApo.dll
+            build/Release/wvinstall.exe
+            build/Release/wvproc.exe
+            build/Release/warmvoice_ai.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: |
+            e2e/metrics.md
+            e2e/*/*_out.wav
+            e2e/*/*_in.wav
+            e2e/*/usbmic.wav
+            e2e/*/*_log.txt
+            e2e/*/*_metrics.txt
