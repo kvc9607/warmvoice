@@ -8,15 +8,18 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <initguid.h>
 #include <audioclient.h>
-#include <propkeydef.h>   // DEFINE_PROPERTYKEY, needed before the devpkey header
-#include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <knownfolders.h>
 #include <wrl.h>
 #include <WebView2.h>
+#include <propkeydef.h>
+// Instantiate only the device PROPERTYKEYs used here; initguid must come after the headers
+// above (shlobj/cguid break when it is included first).
+#include <initguid.h>
+#include <functiondiscoverykeys_devpkey.h>
 
 #include <atomic>
 #include <cmath>
