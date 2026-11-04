@@ -23,6 +23,8 @@
 #include <sddl.h>
 
 #include <cstdio>
+#include <fcntl.h>
+#include <io.h>
 #include <string>
 #include <vector>
 
@@ -290,6 +292,8 @@ static int status(const Endpoint& e) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    // Print Unicode (device names are often Chinese, e.g. "麦克风") instead of "???".
+    _setmode(_fileno(stdout), _O_U16TEXT);
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     auto eps = listEndpoints();
     if (argc < 2 || std::wstring(argv[1]) == L"list") {
