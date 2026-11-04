@@ -604,6 +604,7 @@ static void dumpSystem() {
 }
 
 // ---------------------------------------------------------------- commands
+static int uninstall(const Endpoint& e);
 static int install(const Endpoint& e, const std::wstring& slotArg) {
     prepareDataDir();
     if (!registerDll()) { say(L"注册暖声组件失败\n"); return 1; }
