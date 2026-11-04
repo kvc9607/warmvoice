@@ -22,10 +22,20 @@ jobs:
       - name: Unit tests (AI stand-in)
         run: build\Release\wvtests.exe
 
+      - name: Cache the AI library build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            dfn-src/target
+          key: dfn-${{ env.DFN_COMMIT }}-${{ hashFiles('dfn/libdf-hook.patch') }}
+          restore-keys: dfn-${{ env.DFN_COMMIT }}-
+
       - name: Build AI library (DeepFilterNet 3 + WarmVoice hook patch)
         shell: bash
         run: |
-          git init dfn-src && cd dfn-src && git config core.autocrlf false
+          mkdir -p dfn-src && cd dfn-src && git init -q && git config core.autocrlf false
           git remote add origin https://github.com/Rikorose/DeepFilterNet.git
           git fetch --depth 1 origin "$DFN_COMMIT" && git checkout FETCH_HEAD
           git apply ../dfn/libdf-hook.patch
