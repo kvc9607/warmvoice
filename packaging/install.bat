@@ -12,13 +12,15 @@ taskkill /im WarmVoice.exe /f >nul 2>&1
 net stop audiosrv /y >nul 2>&1
 echo Copying files to %DEST% ...
 if not exist "%DEST%" mkdir "%DEST%"
-copy /y "%~dp0WarmVoiceApo.dll" "%DEST%\" >nul || goto :fail
+copy /y "%~dp0WarmVoiceApo.dll" "%DEST%\" >nul || (net start audiosrv >nul 2>&1 & goto :fail)
 copy /y "%~dp0warmvoice_ai.dll" "%DEST%\" >nul || goto :fail
 copy /y "%~dp0wvinstall.exe" "%DEST%\" >nul || goto :fail
 copy /y "%~dp0wvproc.exe" "%DEST%\" >nul
 copy /y "%~dp0uninstall.bat" "%DEST%\" >nul
 copy /y "%~dp0WarmVoice.exe" "%DEST%\" >nul || goto :fail
 xcopy /e /i /y /q "%~dp0ui" "%DEST%\ui" >nul || goto :fail
+rem Windows lists microphones through the audio service, so start it again right away.
+net start audiosrv >nul 2>&1
 rem Start menu shortcut + start with Windows (for the settings panel; the sound processing
 rem itself runs inside Windows and needs neither)
 powershell -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('CommonPrograms')+'\WarmVoice.lnk');$s.TargetPath='%DEST%\WarmVoice.exe';$s.Save()"
@@ -29,6 +31,7 @@ echo Microphones on this computer:
 echo.
 echo Installing on the default microphone ...
 "%DEST%\wvinstall.exe" install default || goto :fail
+net start audiosrv >nul 2>&1
 echo.
 echo Done. Open Settings - System - Sound - your microphone - "Test your microphone",
 echo talk for a few seconds, then this window checks that WarmVoice is running:
@@ -41,6 +44,7 @@ explorer.exe "%DEST%\WarmVoice.exe"
 pause
 exit /b 0
 :fail
+net start audiosrv >nul 2>&1
 echo.
 echo Installation failed. Please send a screenshot of this window.
 pause

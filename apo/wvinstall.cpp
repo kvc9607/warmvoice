@@ -329,6 +329,11 @@ int wmain(int argc, wchar_t** argv) {
                 if (sel == std::to_wstring(i) || sel == eps[i].id || sel == eps[i].guid) targets.push_back(&eps[i]);
         }
     }
+    if (eps.empty()) {
+        std::wprintf(L"No active microphone found. Is one plugged in and enabled, and is the Windows audio\n"
+                     L"service (Audiosrv) running? Try: net start audiosrv\n");
+        return 2;
+    }
     if (targets.empty()) { std::wprintf(L"choose a microphone: wvinstall list\n"); return 2; }
     std::wstring slot = L"efx";
     for (int i = 3; i + 1 < argc; ++i)
