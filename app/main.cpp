@@ -329,6 +329,21 @@ void pushParams() {
 }
 
 // ----------------------------------------------------------------------------- A/B recording
+// The last A/B clip is also saved as two WAV files in %ProgramData%\WarmVoice (raw mic and
+// with WarmVoice), so the sound can be checked exactly later.
+void saveWav(const std::wstring& path, const std::vector<float>& x, int rate) {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"wb") || !f) return;
+    const uint32_t data = (uint32_t)(x.size() * 4), riff = 36 + data, fmtLen = 16, byteRate = (uint32_t)rate * 4;
+    const uint16_t fmt = 3, ch = 1, align = 4, bits = 32;
+    const uint32_t sr = (uint32_t)rate;
+    std::fwrite("RIFF", 1, 4, f); std::fwrite(&riff, 4, 1, f); std::fwrite("WAVEfmt ", 1, 8, f);
+    std::fwrite(&fmtLen, 4, 1, f); std::fwrite(&fmt, 2, 1, f); std::fwrite(&ch, 2, 1, f); std::fwrite(&sr, 4, 1, f);
+    std::fwrite(&byteRate, 4, 1, f); std::fwrite(&align, 2, 1, f); std::fwrite(&bits, 2, 1, f);
+    std::fwrite("data", 1, 4, f); std::fwrite(&data, 4, 1, f); std::fwrite(x.data(), 4, x.size(), f);
+    std::fclose(f);
+}
+
 struct Recorder {
     std::shared_ptr<std::vector<float>> raw, fx;   // fx replaced atomically when re-processed
     std::atomic<bool> useFx{true}, playing{false};
@@ -386,7 +401,11 @@ struct Recorder {
             std::copy(src->begin(), src->end(), io.begin());
             for (size_t i = 0; i < io.size(); i += 480) p.process(&io[i], (int)std::min<size_t>(480, io.size() - i));
             auto out = std::make_shared<std::vector<float>>(io.begin() + lat, io.begin() + lat + src->size());
-            if (gen == processGen) std::atomic_store(&fx, out);
+            if (gen == processGen) {
+                std::atomic_store(&fx, out);
+                saveWav(dataDir() + L"\\ab-raw.wav", *src, rt);
+                saveWav(dataDir() + L"\\ab-warmvoice.wav", *out, rt);
+            }
             PostMessageW(g_hwnd, WM_RECDONE, 0, 0);
         });
     }

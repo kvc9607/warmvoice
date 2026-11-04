@@ -58,6 +58,10 @@ int main(int argc, char** argv) {
             u.tone = t == "clear" ? Tone::Clear : (t == "natural" ? Tone::Natural : Tone::Warm);
         } else if (a == "--volume") u.volume = (float)std::atof(next().c_str());
         else if (a == "--ai") opt.aiLibraryPath = next();
+        else if (a == "--optimize") u.optimizeAmount = (float)std::atof(next().c_str());
+        else if (a == "--texture") u.textureAmount = (float)std::atof(next().c_str());
+        else if (a == "--restore") u.restoreAmount = (float)std::atof(next().c_str());
+        else if (a == "--denoise") u.denoiseStrength = (float)std::atof(next().c_str());
         else if (a == "--one-pass") twoPass = false;
         else if (a == "--quiet") quiet = true;
         else if (a == "--rate") simRate = std::atoi(next().c_str());

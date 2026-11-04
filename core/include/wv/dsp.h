@@ -21,7 +21,7 @@ public:
     void reset();
 
 private:
-    Biquad srcHp_, srcLp_, dcLp_, genHp1_, genHp2_, genLp_;
+    Biquad srcHp_, srcLp_, dcLp_, genHp1_, genHp2_, genLp_, genLp2_, genTilt_;
     float envSrc_ = 0, envGen_ = 0, g_ = 0, gain_ = 0, cut_ = 0;
     float envCoef_ = 0, gCoef_ = 0;
     bool on_ = false;
@@ -41,11 +41,11 @@ private:
     std::array<float, kTaps> h_{};
     std::array<float, kTaps + 1> upHist_{};       // 2 x 16 even-tap history
     std::array<float, 2 * kTaps> dnHist_{};
-    std::array<float, 2 * kTaps> dryHist_{}, scaleHist_{};
+    std::array<float, 2 * kTaps> dryHist_{}, lowHist_{}, scaleHist_{};
     int upPos_ = 0, dnPos_ = 0, dryPos_ = 0;
     float env_ = 1e-4f, envCoef_ = 0;
     float drive_ = 0, a2_ = 0, a3_ = 0, mix_ = 0;
-    Biquad dc_;
+    Biquad dc_, lowA_, lowB_, outLp_;   // saturate only the low band; keep added harmonics below 6 kHz
 };
 
 // ---- Dynamics: leveller (slow) + compressor (fast) + look-ahead limiter --------------------

@@ -25,10 +25,12 @@ float interpLog(const Anchor* a, int n, float hz) {
     return a[n - 1].db;
 }
 
-// Smooth long-term spectrum shape of clean, close-miked speech, relative to 1 kHz.
-// Starting point for the smart optimisation; to be refined by listening tests.
-const Anchor kRef[] = {{63, -12}, {100, -4}, {160, 2}, {250, 4}, {400, 4}, {630, 2}, {1000, 0},
-                       {1600, -3}, {2500, -6}, {4000, -9}, {6300, -12}, {10000, -16}, {16000, -22}};
+// Long-term spectrum of speech (power per Hz, relative to 1 kHz): the ANSI S3.5 / SII
+// standard speech spectrum, with 2-4 dB more presence (2-5 kHz) for close-miked, clear speech.
+// The earlier hand-made curve was 6-10 dB too bright above 2 kHz and pushed every voice harsh.
+const Anchor kRef[] = {{63, -6}, {100, 2}, {160, 7}, {250, 9}, {400, 9}, {630, 6}, {800, 3}, {1000, 0},
+                       {1250, -2}, {1600, -4.5f}, {2000, -7}, {2500, -9.5f}, {3150, -11}, {4000, -13},
+                       {5000, -16.5f}, {6300, -19.5f}, {8000, -22}, {10000, -25}, {16000, -32}};
 const Anchor kWarm[] = {{50, 1}, {120, 2.5f}, {250, 2}, {500, 0.5f}, {1000, 0}, {2000, -0.5f},
                         {3500, -1}, {6000, -0.5f}, {10000, 0.5f}, {16000, 1}};
 const Anchor kClear[] = {{50, -1.5f}, {120, -1}, {250, -1.5f}, {500, -0.5f}, {1000, 0}, {2000, 1},
@@ -194,7 +196,9 @@ Resolved resolve(const UserParams& u, const Analysis& a, ResolveInfo* info) {
     // endpoint can never carry the restored band to the apps.
     r.restoreOn = on(Stage::Restore) && a.inputRate >= 32000 && cutoff > 0.0f && cutoff < 11000.0f;
     r.restoreCutoffHz = r.restoreOn ? cutoff : 0.0f;
-    r.restoreGain = r.restoreOn ? 0.5f * clampv(u.restoreAmount, 0.0f, 1.0f) : 0.0f;
+    // New band about 14 dB under the band it is made from (at the default 80 %): adds air
+    // without the hiss of a flat extension.
+    r.restoreGain = r.restoreOn ? 0.25f * clampv(u.restoreAmount, 0.0f, 1.0f) : 0.0f;
 
     // ---- automatic tone layers (tone preset / smart correction) -> one 10-band bank ----
     const bool calibrated = a.speechFrames >= 500;
@@ -258,8 +262,14 @@ Resolved resolve(const UserParams& u, const Analysis& a, ResolveInfo* info) {
         }
         mean /= std::max(1, nm);   // overall loudness is the leveller's job, not the EQ's
         for (int b = 0; b < kBands; ++b) {
-            const float lim = L.centreHz[b] < 200.0f ? 3.0f : 6.0f;
-            d[b] = w[b] * clampv(d[b] - mean, -lim, lim) * amt;
+            // Cutting sounds natural, boosting exposes noise and codec artefacts: cuts up to
+            // 6 dB, boosts only up to 3 dB (2 dB above 2 kHz), and nothing near the top of a
+            // narrow microphone.
+            const float hz = L.centreHz[b];
+            const float cut = hz < 200.0f ? 3.0f : 6.0f;
+            float boost = hz < 200.0f ? 2.0f : (hz > 2000.0f ? 2.0f : 3.0f);
+            if (cutoff > 0.0f && hz > 0.7f * cutoff) boost = 0.0f;
+            d[b] = w[b] * clampv(d[b] - mean, -cut, boost) * amt;
         }
         for (size_t i = 0; i < grid.size(); ++i) {
             const float hz = grid[i];
@@ -308,7 +318,7 @@ Resolved resolve(const UserParams& u, const Analysis& a, ResolveInfo* info) {
     r.texDrive = ta;
     r.texEven = even[st];
     r.texOdd = odd[st];
-    r.texMix = r.textureOn ? 0.8f * ta : 0.0f;
+    r.texMix = r.textureOn ? 0.7f * ta : 0.0f;
 
     if (info) {
         info->detectedCutoffHz = cutoff;

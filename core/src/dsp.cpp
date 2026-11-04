@@ -22,7 +22,11 @@ void Restorer::setParams(float cutoffHz, float gain) {
         srcLp_.c = BiquadCoefs::lowpass(cutoffHz * 0.92f, 0.707f, fs);
         genHp1_.c = BiquadCoefs::highpass(cutoffHz, 0.5412f, fs);   // 4th-order Butterworth
         genHp2_.c = BiquadCoefs::highpass(cutoffHz, 1.3066f, fs);
-        genLp_.c = BiquadCoefs::lowpass(std::min(2.0f * cutoffHz, 20000.0f) * 0.95f, 0.707f, fs);
+        // 4th-order low-pass at 1.7 fc plus a gentle tilt: real speech keeps falling above the
+        // cutoff (about -10 dB per octave), so the new band must not be flat (that is hiss).
+        genLp_.c = BiquadCoefs::lowpass(std::min(1.7f * cutoffHz, 20000.0f), 0.5412f, fs);
+        genLp2_.c = BiquadCoefs::lowpass(std::min(1.7f * cutoffHz, 20000.0f), 1.3066f, fs);
+        genTilt_.c = BiquadCoefs::highShelf(1.25f * cutoffHz, -6.0f, fs, 0.7f);
         envCoef_ = onePoleCoef(0.005f, fs);
         gCoef_ = onePoleCoef(0.010f, fs);
         reset();
@@ -33,7 +37,7 @@ void Restorer::setParams(float cutoffHz, float gain) {
 }
 
 void Restorer::reset() {
-    srcHp_.reset(); srcLp_.reset(); genHp1_.reset(); genHp2_.reset(); genLp_.reset();
+    srcHp_.reset(); srcLp_.reset(); genHp1_.reset(); genHp2_.reset(); genLp_.reset(); genLp2_.reset(); genTilt_.reset();
     envSrc_ = envGen_ = g_ = 0;
 }
 
@@ -41,7 +45,7 @@ void Restorer::process(float* x, int n) {
     if (!on_) return;
     for (int i = 0; i < n; ++i) {
         const float s = srcLp_.process(srcHp_.process(x[i]));
-        const float gen = genLp_.process(genHp2_.process(genHp1_.process(std::fabs(s))));
+        const float gen = genTilt_.process(genLp2_.process(genLp_.process(genHp2_.process(genHp1_.process(std::fabs(s))))));
         envSrc_ = envCoef_ * envSrc_ + (1 - envCoef_) * s * s;
         envGen_ = envCoef_ * envGen_ + (1 - envCoef_) * gen * gen;
         const float target = std::min(8.0f, gain_ * std::sqrt(envSrc_ / (envGen_ + 1e-14f)));
@@ -67,15 +71,22 @@ Texture::Texture() {
         h_[k] = (float)(v * besselI0(beta * std::sqrt(std::max(0.0, 1 - r * r))) / i0b);
     }
     dc_.c = BiquadCoefs::highpass(20.0f, 0.707f, (float)kFs);
+    // Warmth comes from harmonics of the low and middle range. Saturating the whole band also
+    // turns the 3-8 kHz content (and a narrow microphone's codec artefacts) into fizz up to
+    // 20 kHz - that is what makes a voice sound harsh and "low bit-rate". So only the band
+    // below about 1.5 kHz is saturated and the added harmonics are kept below 6 kHz.
+    lowA_.c = BiquadCoefs::lowpass(1500.0f, 0.5412f, (float)kFs);
+    lowB_.c = BiquadCoefs::lowpass(1500.0f, 1.3066f, (float)kFs);
+    outLp_.c = BiquadCoefs::lowpass(6000.0f, 0.707f, (float)kFs);
     envCoef_ = onePoleCoef(0.03f, (float)kFs);
     reset();
 }
 
 void Texture::reset() {
-    upHist_.fill(0); dnHist_.fill(0); dryHist_.fill(0); scaleHist_.fill(0);
+    upHist_.fill(0); dnHist_.fill(0); dryHist_.fill(0); lowHist_.fill(0); scaleHist_.fill(0);
     upPos_ = dnPos_ = dryPos_ = 0;
     env_ = 1e-4f;
-    dc_.reset();
+    dc_.reset(); lowA_.reset(); lowB_.reset(); outLp_.reset();
 }
 
 void Texture::setParams(float drive, float even, float odd, float mix) {
@@ -101,9 +112,10 @@ void Texture::process(float* x, int n) {
     constexpr int NE = C + 1;             // 16 even taps
     for (int i = 0; i < n; ++i) {
         const float in = x[i];
-        env_ = envCoef_ * env_ + (1 - envCoef_) * in * in;
-        const float scale = 3.0f * std::sqrt(env_) + 1e-5f;     // speech RMS -> about 1/3
-        const float u = in / scale * drive_;
+        const float lo = lowB_.process(lowA_.process(in));
+        env_ = envCoef_ * env_ + (1 - envCoef_) * lo * lo;
+        const float scale = 3.0f * std::sqrt(env_) + 1e-5f;     // low-band RMS -> about 1/3
+        const float u = lo / scale * drive_;
         // history of u (duplicated ring, newest at upPos_ + NE)
         upHist_[upPos_] = u;
         upHist_[upPos_ + NE] = u;
@@ -129,14 +141,17 @@ void Texture::process(float* x, int n) {
         // dry signal and the level scale, both delayed to match (15 samples at 48 kHz)
         dryHist_[dryPos_] = in;
         dryHist_[dryPos_ + kTaps] = in;
+        lowHist_[dryPos_] = lo;
+        lowHist_[dryPos_ + kTaps] = lo;
         scaleHist_[dryPos_] = scale;
         scaleHist_[dryPos_ + kTaps] = scale;
         const float dry = dryHist_[dryPos_ + kTaps - C];
+        const float dryLo = lowHist_[dryPos_ + kTaps - C];
         const float sc = scaleHist_[dryPos_ + kTaps - C];
         dryPos_ = (dryPos_ + 1) % kTaps;
         // only the added harmonics are DC-blocked (the u^2 term makes DC); the voice itself
         // passes untouched
-        const float added = dc_.process(v * sc / drive_ - dry);
+        const float added = outLp_.process(dc_.process(v * sc / drive_ - dryLo));
         x[i] = dry + mix_ * added;
     }
 }
