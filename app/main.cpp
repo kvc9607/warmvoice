@@ -102,9 +102,11 @@ void post(const std::wstring& json) {
 struct Settings {
     UserParams u;
     std::wstring mic;   // endpoint id
+    double zoom = 0.85; // page zoom (Ctrl + mouse wheel changes it; remembered)
 
     bool set(const std::string& k, double v) {
         auto st = [&](int i) { u.stageOn[i] = v != 0; return true; };
+        if (k == "zoom") { zoom = std::max(0.5, std::min(2.0, v)); return true; }
         if (k == "enabled") { u.enabled = v != 0; return true; }
         if (k == "tone") { u.tone = (Tone)(int)v; return true; }
         if (k == "volume") { u.volume = (float)v; return true; }
@@ -134,6 +136,7 @@ struct Settings {
         m["restore"] = u.restoreAmount; m["optimize"] = u.optimizeAmount; m["texture"] = u.textureAmount;
         m["textureStyle"] = (int)u.textureStyle; m["compThr"] = u.compThresholdDb; m["compRatio"] = u.compRatio;
         m["compSpeed"] = u.compSpeed;
+        m["zoom"] = zoom;
         for (int i = 1; i < (int)Stage::Count; ++i) m["stage." + std::to_string(i)] = u.stageOn[i];
         for (int i = 0; i < kEqNodes; ++i) {
             m["eq." + std::to_string(i) + ".hz"] = u.eq[i].hz;
@@ -625,8 +628,8 @@ void onMessage(const std::wstring& wmsg) {
         MONITORINFO mi{sizeof(mi)};
         GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
         const RECT wa = mi.rcWork;
-        const int w = std::min<int>(MulDiv(detail ? 1360 : 520, dpi, 96), wa.right - wa.left);
-        const int h = std::min<int>(MulDiv(detail ? 1000 : 940, dpi, 96), wa.bottom - wa.top);
+        const int w = std::min<int>(MulDiv(detail ? 1200 : 460, dpi, 96), (wa.right - wa.left) * 92 / 100);
+        const int h = std::min<int>(MulDiv(detail ? 860 : 820, dpi, 96), (wa.bottom - wa.top) * 92 / 100);
         RECT cur;
         GetWindowRect(g_hwnd, &cur);
         const int x = std::max<int>(wa.left, std::min<int>(cur.left, wa.right - w));
@@ -667,6 +670,17 @@ void createWebView(HWND h) {
                         RECT r;
                         GetClientRect(h, &r);
                         c->put_Bounds(r);
+                        // Desktop-sized by default (the page is drawn for touch-sized controls).
+                        c->put_ZoomFactor(g_set.zoom);
+                        c->add_ZoomFactorChanged(Callback<ICoreWebView2ZoomFactorChangedEventHandler>(
+                            [](ICoreWebView2Controller* cc, IUnknown*) -> HRESULT {
+                                double z = 1;
+                                if (SUCCEEDED(cc->get_ZoomFactor(&z)) && std::fabs(z - g_set.zoom) > 0.01) {
+                                    g_set.zoom = z;
+                                    g_set.save();
+                                }
+                                return S_OK;
+                            }).Get(), nullptr);
                         ComPtr<ICoreWebView2Settings> s;
                         if (SUCCEEDED(g_webview->get_Settings(&s))) {
                             s->put_AreDefaultContextMenusEnabled(FALSE);
@@ -777,10 +791,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     const UINT dpi = GetDpiForSystem();
     RECT wa{0, 0, 1280, 720};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-    const int ww = std::min<int>(MulDiv(520, dpi, 96), wa.right - wa.left);
-    const int wh = std::min<int>(MulDiv(940, dpi, 96), wa.bottom - wa.top);
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"暖声 WarmVoice", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                             ww, wh, nullptr, nullptr, inst, nullptr);
+    // Small window, centred, never larger than the screen.
+    const int ww = std::min<int>(MulDiv(460, dpi, 96), (wa.right - wa.left) * 92 / 100);
+    const int wh = std::min<int>(MulDiv(820, dpi, 96), (wa.bottom - wa.top) * 92 / 100);
+    const int wx = wa.left + (wa.right - wa.left - ww) / 2, wy = wa.top + (wa.bottom - wa.top - wh) / 2;
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"暖声 WarmVoice", WS_OVERLAPPEDWINDOW, wx, wy, ww, wh, nullptr, nullptr,
+                             inst, nullptr);
     addTray(g_hwnd);
     createWebView(g_hwnd);
     ShowWindow(g_hwnd, show);
