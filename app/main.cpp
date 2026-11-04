@@ -325,7 +325,12 @@ void pushParams() {
     const bool changed = !g_resValid || std::memcmp(&r, &g_res, sizeof r) != 0;
     g_res = r;
     g_resValid = true;
-    if (changed && g_link.b) seqWrite(g_link.b->paramSeq, g_link.b->params, g_res);
+    if (changed && g_link.b) {
+        seqWrite(g_link.b->paramSeq, g_link.b->params, g_res);
+        // Saved for the APO, so these settings also apply when this app is not running.
+        // Only while connected: then the analysis (mic cutoff, voice profile) is real.
+        saveParams(g_link.guid, g_res);
+    }
 }
 
 // ----------------------------------------------------------------------------- A/B recording

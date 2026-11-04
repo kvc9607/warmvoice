@@ -215,6 +215,14 @@ public:
         a.inputRate = rate_;
         pipeline_->setParams(resolve(u, a));
         openShared();
+        // No app has sent settings into the shared block yet: use the last saved ones.
+        if (!shared_ || shared_->paramSeq.load() == 0) {
+            Resolved saved;
+            if (loadParams(endpointGuid_.empty() ? std::wstring(L"default") : endpointGuid_, saved)) {
+                pipeline_->setParams(saved);
+                WV_LOG("LockForProcess: using the saved settings");
+            }
+        }
         firstBlock_ = true;
         locked_ = true;
         {

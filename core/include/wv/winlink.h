@@ -47,6 +47,39 @@ inline std::wstring guidFromEndpointId(const std::wstring& id) {
     return g;
 }
 
+// Last settings, so the APO uses them even when the app is not running (after a restart,
+// or after "退出" in the tray). %ProgramData%\WarmVoice\params-<guid>.bin
+inline std::wstring paramsFile(const std::wstring& guid) {
+    std::wstring g;
+    for (wchar_t c : guid) if (c != L'{' && c != L'}') g += c;
+    return dataDir() + L"\\params-" + g + L".bin";
+}
+constexpr uint32_t kParamsMagic = 0x57565031;   // "WVP1"
+inline bool saveParams(const std::wstring& guid, const Resolved& r) {
+    const std::wstring tmp = paramsFile(guid) + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const uint32_t hdr[2] = {kParamsMagic, (uint32_t)sizeof(Resolved)};
+    DWORD w1 = 0, w2 = 0;
+    const bool ok = WriteFile(h, hdr, sizeof hdr, &w1, nullptr) && WriteFile(h, &r, sizeof r, &w2, nullptr) &&
+                    w1 == sizeof hdr && w2 == sizeof r;
+    CloseHandle(h);
+    return ok && MoveFileExW(tmp.c_str(), paramsFile(guid).c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+inline bool loadParams(const std::wstring& guid, Resolved& r) {
+    HANDLE h = CreateFileW(paramsFile(guid).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    uint32_t hdr[2] = {};
+    Resolved t;
+    DWORD r1 = 0, r2 = 0;
+    const bool ok = ReadFile(h, hdr, sizeof hdr, &r1, nullptr) && r1 == sizeof hdr && hdr[0] == kParamsMagic &&
+                    hdr[1] == sizeof(Resolved) && ReadFile(h, &t, sizeof t, &r2, nullptr) && r2 == sizeof t &&
+                    t.version == Resolved().version;
+    CloseHandle(h);
+    if (ok) r = t;
+    return ok;
+}
+
 // Append one line to %ProgramData%\WarmVoice\<file>. Never throws; silently gives up.
 inline void logTo(const wchar_t* file, const char* fmt, ...) {
     char line[1024];
