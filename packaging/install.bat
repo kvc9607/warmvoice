@@ -19,8 +19,10 @@ copy /y "%~dp0wvproc.exe" "%DEST%\" >nul
 copy /y "%~dp0uninstall.bat" "%DEST%\" >nul
 copy /y "%~dp0WarmVoice.exe" "%DEST%\" >nul || goto :fail
 xcopy /e /i /y /q "%~dp0ui" "%DEST%\ui" >nul || goto :fail
-rem Windows lists microphones through the audio service, so start it again right away.
+rem Windows lists microphones through the audio service, so start it again right away
+rem and give it two seconds to bring the devices back.
 net start audiosrv >nul 2>&1
+timeout /t 2 /nobreak >nul
 rem Start menu shortcut + start with Windows (for the settings panel; the sound processing
 rem itself runs inside Windows and needs neither)
 powershell -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('CommonPrograms')+'\WarmVoice.lnk');$s.TargetPath='%DEST%\WarmVoice.exe';$s.Save()"
