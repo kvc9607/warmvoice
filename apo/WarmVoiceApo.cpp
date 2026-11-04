@@ -30,10 +30,13 @@
 #include "wv/pipeline.h"
 #include "wv/resolve.h"
 #include "wv/shared.h"
+#include "wv/winlink.h"
 
 using namespace wv;
 
 static HMODULE g_module = nullptr;
+// Diagnostics: %ProgramData%\WarmVoice\apo.log (only on setup calls, never per audio block).
+#define WV_LOG(...) wv::logTo(L"apo.log", __VA_ARGS__)
 static std::atomic<long> g_objects{0}, g_locks{0};
 
 // {1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},4  - endpoint GUID string
@@ -106,13 +109,38 @@ public:
     STDMETHODIMP Initialize(UINT32 cbDataSize, BYTE* pbyData) override {
         // Remember which endpoint we serve, to name the shared-memory block.
         endpointGuid_.clear();
+        bool discovery = false;
+        IMMDeviceCollection* devs = nullptr;
+        IPropertyStore* props = nullptr;
         if (pbyData && cbDataSize >= sizeof(APOInitSystemEffects2)) {
             auto* init = reinterpret_cast<APOInitSystemEffects2*>(pbyData);
-            if (init->InitializeForDiscoveryOnly) return S_OK;
-            readEndpointGuid(init->pAPOEndpointProperties);
+            discovery = init->InitializeForDiscoveryOnly != FALSE;
+            devs = init->pDeviceCollection;
+            props = init->pAPOEndpointProperties;
+            mode_ = init->AudioProcessingMode;
         } else if (pbyData && cbDataSize >= sizeof(APOInitSystemEffects)) {
-            readEndpointGuid(reinterpret_cast<APOInitSystemEffects*>(pbyData)->pAPOEndpointProperties);
+            auto* init = reinterpret_cast<APOInitSystemEffects*>(pbyData);
+            devs = init->pDeviceCollection;
+            props = init->pAPOEndpointProperties;
         }
+        if (!discovery) {
+            // The last device in the collection is always the endpoint itself; its id ends in
+            // the same {guid} the app and the installer use.
+            if (devs) {
+                UINT n = 0;
+                IMMDevice* d = nullptr;
+                if (SUCCEEDED(devs->GetCount(&n)) && n > 0 && SUCCEEDED(devs->Item(n - 1, &d)) && d) {
+                    LPWSTR id = nullptr;
+                    if (SUCCEEDED(d->GetId(&id)) && id) { endpointGuid_ = guidFromEndpointId(id); CoTaskMemFree(id); }
+                    d->Release();
+                }
+            }
+            if (endpointGuid_.empty()) readEndpointGuid(props);
+        }
+        wchar_t m[64] = {};
+        StringFromGUID2(mode_, m, 64);
+        WV_LOG("Initialize size=%u discovery=%d endpoint=%ls mode=%ls", cbDataSize, (int)discovery,
+               endpointGuid_.empty() ? L"(unknown)" : endpointGuid_.c_str(), m);
         return S_OK;
     }
     STDMETHODIMP IsInputFormatSupported(IAudioMediaType* opposite, IAudioMediaType* requested,
@@ -132,12 +160,14 @@ public:
     // ---- IAudioProcessingObjectConfiguration ----
     STDMETHODIMP LockForProcess(UINT32 nIn, APO_CONNECTION_DESCRIPTOR** in, UINT32 nOut,
                                 APO_CONNECTION_DESCRIPTOR** out) override {
-        if (nIn != 1 || nOut != 1 || !in || !out || !in[0]->pFormat) return E_INVALIDARG;
+        if (nIn != 1 || nOut != 1 || !in || !out || !in[0]->pFormat) { WV_LOG("LockForProcess: bad connections"); return E_INVALIDARG; }
         UNCOMPRESSEDAUDIOFORMAT f{};
         HRESULT hr = in[0]->pFormat->GetUncompressedAudioFormat(&f);
-        if (FAILED(hr)) return hr;
-        if (f.guidFormatType != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT || f.dwBytesPerSampleContainer != 4)
+        if (FAILED(hr)) { WV_LOG("LockForProcess: no format (0x%08lx)", (unsigned long)hr); return hr; }
+        if (f.guidFormatType != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT || f.dwBytesPerSampleContainer != 4) {
+            WV_LOG("LockForProcess: format not float32");
             return APOERR_FORMAT_NOT_SUPPORTED;
+        }
         rate_ = (int)(f.fFramesPerSecond + 0.5f);
         channels_ = (int)f.dwSamplesPerFrame;
         try {
@@ -147,6 +177,7 @@ public:
             pipeline_->configure(rate_, channels_, opt);
         } catch (...) {
             pipeline_.reset();
+            WV_LOG("LockForProcess: pipeline setup failed");
             return E_OUTOFMEMORY;
         }
         // Until the app sends settings, run the defaults (warm tone, everything on).
@@ -155,7 +186,14 @@ public:
         a.inputRate = rate_;
         pipeline_->setParams(resolve(u, a));
         openShared();
+        firstBlock_ = true;
         locked_ = true;
+        {
+            Analysis now;
+            pipeline_->getAnalysis(now);
+            WV_LOG("LockForProcess: %d Hz, %d ch, AI %s (problem %d), link %s", rate_, channels_,
+                   now.aiActive ? "on" : "off", now.aiProblem, shared_ ? (link_.viaFile ? "file" : "global") : "NONE");
+        }
         return S_OK;
     }
     STDMETHODIMP UnlockForProcess() override {
@@ -178,6 +216,10 @@ public:
         if (ip->u32BufferFlags == BUFFER_SILENT) ZeroMemory(dst, samples * sizeof(float));
         else if (dst != src) CopyMemory(dst, src, samples * sizeof(float));
 
+        if (firstBlock_) {   // once per stream start: proves Windows really sends us audio
+            firstBlock_ = false;
+            WV_LOG("first audio block: %u frames", frames);
+        }
         if (pipeline_ && locked_) {
             pollParams();
             tapRaw(dst, frames);
@@ -229,7 +271,11 @@ private:
         const bool isFloat = f.guidFormatType == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT && f.dwBytesPerSampleContainer == 4;
         const bool okShape = f.dwSamplesPerFrame >= 1 && f.dwSamplesPerFrame <= 16 && f.fFramesPerSecond >= 8000.0f &&
                              f.fFramesPerSecond <= 384000.0f;
-        if (!isFloat || !okShape) return APOERR_FORMAT_NOT_SUPPORTED;
+        if (!isFloat || !okShape) {
+            if (++rejects_ <= 4) WV_LOG("format rejected: float=%d bits=%u ch=%u rate=%.0f", (int)isFloat, f.dwBytesPerSampleContainer * 8,
+                   f.dwSamplesPerFrame, f.fFramesPerSecond);
+            return APOERR_FORMAT_NOT_SUPPORTED;
+        }
         // In-place effect: input and output must match.
         if (opposite) {
             UNCOMPRESSEDAUDIOFORMAT o{};
@@ -245,21 +291,15 @@ private:
     // ---- shared memory with the app ----
     void openShared() {
         closeShared();
-        std::wstring name = L"Global\\WarmVoice_" + (endpointGuid_.empty() ? std::wstring(L"default") : endpointGuid_);
-        // SYSTEM, LOCAL SERVICE (audiodg) and administrators: full; interactive users: read/write.
-        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, FALSE};
-        PSECURITY_DESCRIPTOR sd = nullptr;
-        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GRGW;;;IU)",
-                                                                 SDDL_REVISION_1, &sd, nullptr))
-            sa.lpSecurityDescriptor = sd;
-        mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, sd ? &sa : nullptr, PAGE_READWRITE, 0,
-                                      (DWORD)sizeof(SharedBlock), name.c_str());
-        const bool existed = mapping_ && GetLastError() == ERROR_ALREADY_EXISTS;
-        if (sd) LocalFree(sd);
-        if (!mapping_) return;
-        shared_ = (SharedBlock*)MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedBlock));
-        if (!shared_) { CloseHandle(mapping_); mapping_ = nullptr; return; }
-        if (!existed || shared_->magic != kSharedMagic || shared_->size != sizeof(SharedBlock)) {
+        const std::wstring g = endpointGuid_.empty() ? std::wstring(L"default") : endpointGuid_;
+        DWORD e1 = 0, e2 = 0;
+        if (!createLink(g, link_, &e1, &e2)) {
+            WV_LOG("shared memory failed: global error %lu, file error %lu", e1, e2);
+            return;
+        }
+        if (link_.viaFile) WV_LOG("global shared memory not allowed (error %lu), using the file", e1);
+        shared_ = link_.block;
+        if (link_.created || shared_->magic != kSharedMagic || shared_->size != sizeof(SharedBlock)) {
             ZeroMemory((void*)shared_, sizeof(SharedBlock));
             shared_->size = sizeof(SharedBlock);
             shared_->magic = kSharedMagic;
@@ -268,10 +308,8 @@ private:
         lastParamSeq_ = 0;
     }
     void closeShared() {
-        if (shared_) UnmapViewOfFile((void*)shared_);
-        if (mapping_) CloseHandle(mapping_);
+        link_.close();
         shared_ = nullptr;
-        mapping_ = nullptr;
     }
     void pollParams() {
         if (!shared_) return;
@@ -312,8 +350,11 @@ private:
     int rate_ = 48000, channels_ = 1;
     bool locked_ = false;
     std::wstring endpointGuid_;
-    HANDLE mapping_ = nullptr;
+    LinkHandle link_;
     SharedBlock* shared_ = nullptr;
+    GUID mode_{};
+    int rejects_ = 0;
+    bool firstBlock_ = false;
     uint32_t lastParamSeq_ = 0, lastResetProfile_ = 0;
     int analysisTick_ = 0;
     Analysis analysis_;
@@ -351,6 +392,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = h;
         DisableThreadLibraryCalls(h);
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        WV_LOG("loaded into %ls", exe);
     }
     return TRUE;
 }

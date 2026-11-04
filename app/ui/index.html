@@ -9,9 +9,10 @@
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei UI","PingFang SC","Noto Sans SC",system-ui,sans-serif;font-size:14px;user-select:none}
 button,select,input{font-family:inherit}
-.app{display:flex;height:100%}
-.side{width:480px;flex-shrink:0;display:flex;flex-direction:column;gap:16px;padding:20px 22px 22px;background:var(--bg);overflow-y:auto}
-body.detail .side{width:380px;background:var(--side);border-right:1px solid var(--line)}
+.app{display:flex;height:100%;justify-content:center}
+body.detail .app{justify-content:flex-start}
+.side{width:100%;max-width:560px;flex-shrink:0;display:flex;flex-direction:column;gap:16px;padding:20px 22px 22px;background:var(--bg);overflow-y:auto}
+body.detail .side{width:380px;max-width:none;background:var(--side);border-right:1px solid var(--line)}
 .main{flex:1;min-width:0;padding:24px 28px;display:none;flex-direction:column;gap:18px;overflow-y:auto}
 body.detail .main{display:flex}
 .row{display:flex;align-items:center;gap:10px}
@@ -70,7 +71,19 @@ body.detail .box{background:var(--accent);border-color:var(--accent)}
 .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .flow span{height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--accent);font-size:13px;display:flex;align-items:center;gap:6px;background:var(--panel)}
 .flow span.off{border-color:var(--line);color:var(--dim)}
-.warn{background:rgba(224,108,90,.12);border:1px solid var(--bad);color:#F2B3A8;border-radius:12px;padding:10px 12px;font-size:13px;display:none}
+.warn{background:rgba(224,108,90,.12);border:1px solid var(--bad);color:#F2B3A8;border-radius:12px;padding:10px 12px;font-size:13px;line-height:1.55;display:none;flex-direction:column;gap:10px}
+.warn.info{background:rgba(240,163,94,.10);border-color:var(--accent);color:var(--text)}
+.warn .btn{align-self:flex-start;height:36px}
+/* narrow windows: detail mode stacks the two panels, cards go to 2 then 1 column */
+@media (max-width:1250px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:900px){
+  body.detail .app{flex-direction:column;height:auto;min-height:100%}
+  body.detail .side{width:100%;max-width:none;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}
+  body.detail .main{overflow:visible}
+  body.detail .tones{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (max-width:700px){.grid{grid-template-columns:minmax(0,1fr)}.wide,.span2{grid-column:auto}}
+@media (max-width:420px){.side{padding:16px 14px}body .tones,body.detail .tones{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -91,7 +104,7 @@ body.detail .box{background:var(--accent);border-color:var(--accent)}
     <div class="row between"><span class="label">你的声音</span><span class="status" id="status"><span class="dot"></span><span id="statusText">等待麦克风…</span></span></div>
     <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输入</span><canvas id="mIn" height="40" style="flex:1;min-width:0"></canvas></div>
     <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输出</span><canvas id="mOut" height="40" style="flex:1;min-width:0"></canvas></div>
-    <div class="row between small" style="padding-left:54px"><span id="inDb">输入 — dB</span><span id="aiText">AI 降噪</span><span id="outDb">输出 — dB</span></div>
+    <div class="row between small" style="padding-left:54px;white-space:nowrap;gap:6px"><span id="inDb">输入 — dB</span><span id="aiText">AI 降噪</span><span id="outDb">输出 — dB</span></div>
   </div>
 
   <div style="display:flex;flex-direction:column;gap:8px">
@@ -307,14 +320,26 @@ function onState(s){S=s;buildSimple();buildCards();refreshStages();drawAll()}
 const PROBLEM=['', 'AI 降噪文件缺失，现在只做音量和音色处理。请重新安装。','AI 降噪出错，已自动停用，其他处理照常。','电脑太忙，AI 降噪已暂停，其他处理照常。'];
 function onMeters(m){M=m;
   hist.in.push(m.in);hist.in.shift();hist.out.push(m.running?m.out:-90);hist.out.shift();
-  const st=document.getElementById('status');
-  if(!m.installed){st.style.color=col('--bad');document.getElementById('statusText').textContent='还没装到这个麦克风';}
-  else if(!m.running){st.style.color=col('--dim');document.getElementById('statusText').textContent='已安装，等待有软件使用麦克风';}
-  else{st.style.color=col('--good');document.getElementById('statusText').textContent=S&&S.enabled?'正在处理':'已暂停';}
+  const st=document.getElementById('status'),stt=document.getElementById('statusText');
+  let msg='',btn='',info=false;
+  if(m.repairing){st.style.color=col('--accent');stt.textContent='正在修复…';info=true;
+    msg='正在自动安装并检查（看弹出的黑色窗口，大约 20–40 秒，期间所有声音会断一下）。窗口里出现 DONE 就好了。';}
+  else if(!m.installed){st.style.color=col('--bad');stt.textContent='还没装到这个麦克风';
+    msg='暖声还没装到这个麦克风上。';btn='装到这个麦克风';}
+  else if(m.running){st.style.color=col('--good');stt.textContent=S&&S.enabled?'正在处理':'已暂停';
+    if(m.problem)msg=PROBLEM[m.problem];}
+  else if(m.mon===2){st.style.color=col('--bad');stt.textContent='麦克风被独占';
+    msg='这个麦克风被别的软件独占了（多半是 Voicemeeter）。被独占时 Windows 的声音效果完全不能运行，暖声也一样。请在右下角托盘里完全退出 Voicemeeter，几秒后这里会自动变绿。';}
+  else if(m.settled){st.style.color=col('--bad');stt.textContent='Windows 没加载暖声';
+    msg='麦克风有声音进来，但 Windows 没让暖声处理它。点下面的按钮，会换一种方式重新安装，并且自己用麦克风测试，直到能用为止（要管理员权限）。';btn='自动修复';}
+  else{st.style.color=col('--dim');stt.textContent='正在连接麦克风…';}
   document.getElementById('inDb').textContent='输入 '+(m.running?m.in.toFixed(0):'—')+' dB';
   document.getElementById('outDb').textContent='输出 '+(m.running?m.out.toFixed(0):'—')+' dB';
-  document.getElementById('aiText').textContent=!m.running?'等待麦克风':(m.ai?'AI 降噪 · CPU '+(m.load*100).toFixed(0)+'%':'AI 降噪未运行');
-  const w=document.getElementById('warn');w.textContent=PROBLEM[m.problem]||'';w.style.display=m.problem?'block':'none';
+  document.getElementById('aiText').textContent=!m.running?'':(m.ai?'AI 降噪 · CPU '+(m.load*100).toFixed(0)+'%':'AI 降噪未运行');
+  const w=document.getElementById('warn'),key=msg+'|'+btn+'|'+info;
+  if(w.dataset.key!==key){w.dataset.key=key;w.innerHTML='';w.className='warn'+(info?' info':'');
+    if(msg){w.append(el('span',{},msg));if(btn){const b=el('button',{class:'btn primary'},btn);b.onclick=()=>send('repair');w.append(b)}}
+    w.style.display=msg?'flex':'none'}
   const set=(id,t)=>{const e=document.getElementById(id);if(e)e.textContent=t};
   set('cutoffText',m.rate<32000?('麦克风格式 '+m.rate/1000+'kHz，无法补'):m.cutoff>0&&m.cutoff<11000?('只到 '+(m.cutoff/1000).toFixed(1)+'kHz，正在补'):'不缺高频');
   set('profileText',m.calibrated?'已学好':'学习中 '+Math.min(100,Math.round(m.frames/5))+'%');
@@ -323,7 +348,7 @@ function onMeters(m){M=m;
   drawAll();
 }
 function onMics(x){const s=document.getElementById('mic');s.innerHTML='';x.list.forEach(m=>{const o=el('option',{value:m.id},m.name+(m.installed?'':'（未安装暖声）'));if(m.id===x.current)o.selected=true;s.append(o)});
-  const cur=x.list.find(m=>m.id===x.current);document.getElementById('micHint').textContent=cur?(cur.installed?'✓ 已装到这个麦克风上，游戏和 Discord 里不用改设置':'这个麦克风还没装暖声：以管理员身份运行 install.bat'):''}
+  const cur=x.list.find(m=>m.id===x.current);document.getElementById('micHint').textContent=cur?(cur.installed?'✓ 已装到这个麦克风上，游戏和 Discord 里不用改设置':'这个麦克风还没装暖声，点上面的“装到这个麦克风”'):''}
 function onRec(r){rec=Object.assign(rec,r);showRec()}
 if(host){host.addEventListener('message',e=>{const d=e.data;if(d.type==='state')onState(d.user);else if(d.type==='meters')onMeters(d);else if(d.type==='mics')onMics(d);else if(d.type==='rec')onRec(d)});send('ready')}
 else{ // opened in a normal browser: demo data so the page can be previewed

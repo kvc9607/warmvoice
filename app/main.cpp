@@ -21,6 +21,7 @@
 #include <initguid.h>
 #include <functiondiscoverykeys_devpkey.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -38,6 +39,7 @@
 #include "wv/pipeline.h"
 #include "wv/resolve.h"
 #include "wv/shared.h"
+#include "wv/winlink.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -207,35 +209,106 @@ std::vector<Mic> listMics(std::wstring* defaultId) {
 
 // ----------------------------------------------------------------------------- APO link
 struct Link {
-    HANDLE map = nullptr;
+    LinkHandle h;
     SharedBlock* b = nullptr;
     std::wstring guid;
     uint64_t lastBeat = 0;
     int stillHops = 0;
+    int retry = 0;
+    bool fresh = false;   // just connected: send the settings
 
     void close() {
-        if (b) UnmapViewOfFile(b);
-        if (map) CloseHandle(map);
-        b = nullptr; map = nullptr;
+        h.close();
+        b = nullptr;
     }
-    // The APO creates the block when audio first flows; keep trying until then.
+    // The APO creates the block when audio first flows; keep trying (every 0.5 s) until then.
     bool open(const std::wstring& g) {
         if (b && g == guid) return true;
+        if (g == guid && ++retry % 5 != 1) return false;
         close();
         guid = g;
-        map = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, (L"Global\\WarmVoice_" + g).c_str());
-        if (!map) return false;
-        b = (SharedBlock*)MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedBlock));
-        if (!b || b->magic != kSharedMagic || b->size != sizeof(SharedBlock)) { close(); return false; }
+        if (!openLink(g, h, true)) return false;
+        b = h.block;
+        fresh = true;
         return true;
     }
     bool running() {
         if (!b) return false;
-        const uint64_t h = b->heartbeat.load();
-        if (h != lastBeat) { lastBeat = h; stillHops = 0; return true; }
+        const uint64_t hb = b->heartbeat.load();
+        if (hb != lastBeat) { lastBeat = hb; stillHops = 0; return true; }
         return ++stillHops < 5;   // half a second without audio = not running
     }
 } g_link;
+
+// ----------------------------------------------------------------------------- mic monitor
+// While the window is open, keep the selected mic open in shared mode (like any app would) and
+// throw the data away. That makes Windows run the APO, so the meters and the A/B recording
+// work even when no game or chat app is using the mic, and it tells us when another program
+// holds the mic exclusively (then Windows effects cannot run at all).
+struct Monitor {
+    enum State { Idle = 0, Ok = 1, Busy = 2, Failed = 3 };
+    std::atomic<int> state{Idle};
+    std::atomic<bool> quit{false};
+    std::atomic<long> okSince{0};   // GetTickCount when the stream started delivering
+    std::thread th;
+    std::wstring id;
+
+    void start(const std::wstring& micId) {
+        if (th.joinable() && micId == id) return;
+        stop();
+        id = micId;
+        quit = false;
+        th = std::thread([this, micId] { loop(micId); });
+    }
+    void stop() {
+        quit = true;
+        if (th.joinable()) th.join();
+        state = Idle;
+    }
+    void loop(std::wstring micId) {
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        while (!quit) {
+            ComPtr<IMMDeviceEnumerator> en;
+            ComPtr<IMMDevice> dev;
+            ComPtr<IAudioClient> ac;
+            ComPtr<IAudioCaptureClient> cc;
+            WAVEFORMATEX* mix = nullptr;
+            HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en));
+            if (SUCCEEDED(hr)) hr = en->GetDevice(micId.c_str(), &dev);
+            if (SUCCEEDED(hr)) hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)ac.GetAddressOf());
+            if (SUCCEEDED(hr)) hr = ac->GetMixFormat(&mix);
+            if (SUCCEEDED(hr)) hr = ac->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 2000000, 0, mix, nullptr);
+            if (mix) CoTaskMemFree(mix);
+            if (SUCCEEDED(hr)) hr = ac->GetService(IID_PPV_ARGS(&cc));
+            if (SUCCEEDED(hr)) hr = ac->Start();
+            if (FAILED(hr)) {
+                state = hr == AUDCLNT_E_DEVICE_IN_USE ? Busy : Failed;
+                for (int i = 0; i < 20 && !quit; ++i) Sleep(100);   // try again in 2 s
+                continue;
+            }
+            state = Ok;
+            okSince = (long)GetTickCount();
+            while (!quit) {
+                Sleep(50);
+                UINT32 n = 0;
+                hr = cc->GetNextPacketSize(&n);
+                if (FAILED(hr)) break;   // device lost or audio service restarted: reopen
+                while (n) {
+                    BYTE* d; UINT32 f; DWORD fl;
+                    if (FAILED(cc->GetBuffer(&d, &f, &fl, nullptr, nullptr))) break;
+                    cc->ReleaseBuffer(f);
+                    if (FAILED(cc->GetNextPacketSize(&n))) break;
+                }
+            }
+            ac->Stop();
+            state = Failed;
+        }
+        CoUninitialize();
+    }
+    // Stream open for a while (3 s) - long enough that a working APO would show up.
+    bool settled() const { return state == Ok && (long)GetTickCount() - okSince.load() > 3000; }
+} g_mon;
+bool g_repairing = false;
 
 Analysis g_an;
 Resolved g_res;
@@ -441,6 +514,7 @@ void sendMeters() {
     const bool linked = m && m->installed && g_link.open(m->guid);
     const bool running = linked && g_link.running();
     if (linked) seqRead(g_link.b->analysisSeq, g_link.b->analysis, g_an);
+    if (linked && g_link.fresh) { g_link.fresh = false; g_resValid = false; pushParams(); }
     std::wstring raw = L"[", voice = L"[";
     for (int b = 0; b < kBands; ++b) {
         raw += (b ? L"," : L"") + num(g_an.rawLtasDb[b]);
@@ -457,7 +531,9 @@ void sendMeters() {
     eq += L"]";
     const double lat = 1000.0 * (Pipeline::kAiDelay + 15 + Dynamics::lookahead() + kHop) / kFs;
     std::wstring j = L"{\"type\":\"meters\",\"installed\":" + std::to_wstring(m && m->installed) +
-                     L",\"running\":" + std::to_wstring(running) + L",\"in\":" + num(g_an.inPeakDb) +
+                     L",\"running\":" + std::to_wstring(running) + L",\"mon\":" + std::to_wstring(g_mon.state.load()) +
+                     L",\"settled\":" + std::to_wstring(g_mon.settled()) + L",\"repairing\":" + std::to_wstring(g_repairing) +
+                     L",\"in\":" + num(g_an.inPeakDb) +
                      L",\"out\":" + num(g_an.outLevelDb) + L",\"ai\":" + std::to_wstring(g_an.aiActive) +
                      L",\"problem\":" + std::to_wstring(running ? g_an.aiProblem : 0) + L",\"load\":" + num(g_an.load) +
                      L",\"rate\":" + std::to_wstring(g_an.inputRate) + L",\"cutoff\":" + num(g_info.detectedCutoffHz) +
@@ -465,6 +541,39 @@ void sendMeters() {
                      L",\"target\":" + num(g_res.levelTargetDb) + L",\"gr\":" + num(g_an.gainReductionDb) +
                      L",\"latency\":" + num(lat) + L",\"raw\":" + raw + L",\"voice\":" + voice + L",\"autoEq\":" + eq + L"}";
     post(j);
+}
+
+// "自动修复" / "装到这个麦克风": run wvinstall as administrator in a console window. It tries
+// the effect slots one by one and checks each with real audio.
+HANDLE g_repairProc = nullptr;
+void startRepair() {
+    const Mic* m = currentMic();
+    if (!m || g_repairing) return;
+    g_mon.stop();   // the audio service restarts during the repair
+    const std::wstring exe = g_exeDir + L"wvinstall.exe";
+    const std::wstring args = L"install \"" + m->id + L"\" --slot auto --pause";
+    SHELLEXECUTEINFOW sei{sizeof(sei)};
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.hwnd = g_hwnd;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe.c_str();
+    sei.lpParameters = args.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&sei) && sei.hProcess) {
+        g_repairProc = sei.hProcess;
+        g_repairing = true;
+    }
+}
+void pollRepair() {
+    if (!g_repairing || !g_repairProc) return;
+    if (WaitForSingleObject(g_repairProc, 0) != WAIT_OBJECT_0) return;
+    CloseHandle(g_repairProc);
+    g_repairProc = nullptr;
+    g_repairing = false;
+    g_link.close();
+    g_link.guid.clear();
+    g_resValid = false;
+    sendMics();
 }
 
 void onMessage(const std::wstring& wmsg) {
@@ -488,6 +597,7 @@ void onMessage(const std::wstring& wmsg) {
         for (auto& n : g_set.u.eq) n.gainDb = 0;
         g_set.save(); pushParams(); sendState(); return;
     }
+    if (p[0] == "repair") { startRepair(); return; }
     if (p[0] == "profile" && g_link.b) { g_link.b->resetProfile.fetch_add(1); return; }
     if (p[0] == "mic" && p.size() >= 3 && p[1] == "select") {
         const int n = MultiByteToWideChar(CP_UTF8, 0, p[2].c_str(), (int)p[2].size(), nullptr, 0);
@@ -510,9 +620,18 @@ void onMessage(const std::wstring& wmsg) {
     }
     if (p[0] == "ui" && p.size() >= 3 && p[1] == "detail") {
         const bool detail = p[2] == "1";
+        if (IsZoomed(g_hwnd)) return;   // maximized: the page lays itself out
         const UINT dpi = GetDpiForWindow(g_hwnd);
-        const int w = MulDiv(detail ? 1440 : 480, dpi, 96), h = MulDiv(detail ? 1100 : 940, dpi, 96);
-        SetWindowPos(g_hwnd, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        const RECT wa = mi.rcWork;
+        const int w = std::min<int>(MulDiv(detail ? 1360 : 520, dpi, 96), wa.right - wa.left);
+        const int h = std::min<int>(MulDiv(detail ? 1000 : 940, dpi, 96), wa.bottom - wa.top);
+        RECT cur;
+        GetWindowRect(g_hwnd, &cur);
+        const int x = std::max<int>(wa.left, std::min<int>(cur.left, wa.right - w));
+        const int y = std::max<int>(wa.top, std::min<int>(cur.top, wa.bottom - h));
+        SetWindowPos(g_hwnd, nullptr, x, y, w, h, SWP_NOZORDER);
     }
 }
 
@@ -575,8 +694,26 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_SIZE:
             if (g_controller) { RECT r; GetClientRect(h, &r); g_controller->put_Bounds(r); }
             return 0;
+        case WM_GETMINMAXINFO: {
+            const UINT dpi = GetDpiForWindow(h) ? GetDpiForWindow(h) : 96;
+            auto* mm = (MINMAXINFO*)l;
+            mm->ptMinTrackSize.x = MulDiv(380, dpi, 96);
+            mm->ptMinTrackSize.y = MulDiv(560, dpi, 96);
+            return 0;
+        }
+        case WM_DPICHANGED: {
+            const RECT* r = (const RECT*)l;
+            SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
         case WM_TIMER: {
             static int tick = 0;
+            pollRepair();
+            {
+                const Mic* m = currentMic();
+                if (IsWindowVisible(h) && !IsIconic(h) && m && !g_repairing) g_mon.start(m->id);
+                else g_mon.stop();
+            }
             g_rec.poll();
             sendMeters();
             if (++tick % 20 == 0) { pushParams(); if (tick % 100 == 0) sendMics(); }   // profile updates, new mics
@@ -606,6 +743,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_DESTROY:
             Shell_NotifyIconW(NIM_DELETE, &g_tray);
+            g_mon.stop();
             g_rec.stop();
             if (g_rec.worker.joinable()) g_rec.worker.join();   // a joinable thread at exit would abort
             PostQuitMessage(0);
@@ -637,8 +775,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     RegisterClassW(&wc);
     const UINT dpi = GetDpiForSystem();
+    RECT wa{0, 0, 1280, 720};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    const int ww = std::min<int>(MulDiv(520, dpi, 96), wa.right - wa.left);
+    const int wh = std::min<int>(MulDiv(940, dpi, 96), wa.bottom - wa.top);
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"暖声 WarmVoice", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                             MulDiv(480, dpi, 96), MulDiv(940, dpi, 96), nullptr, nullptr, inst, nullptr);
+                             ww, wh, nullptr, nullptr, inst, nullptr);
     addTray(g_hwnd);
     createWebView(g_hwnd);
     ShowWindow(g_hwnd, show);
