@@ -9,7 +9,9 @@
 // so uninstall puts back exactly what the driver had (including other vendors' effects).
 // SPDX-License-Identifier: MIT
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <initguid.h>   // instantiate the SDK GUID / PROPERTYKEY constants used below
 #include <aclapi.h>
