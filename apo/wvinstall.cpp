@@ -70,6 +70,21 @@ static void say(const wchar_t* fmt, ...) {
     }
 }
 
+// Technical details: only into report.txt (the console shows plain Chinese messages).
+static void note(const wchar_t* fmt, ...) {
+    if (!g_report) return;
+    wchar_t buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, fmt, ap);
+    va_end(ap);
+    const int n = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
+    std::string u(n > 0 ? n - 1 : 0, '\0');
+    if (n > 1) WideCharToMultiByte(CP_UTF8, 0, buf, -1, &u[0], n, nullptr, nullptr);
+    std::fwrite(u.data(), 1, u.size(), g_report);
+    std::fflush(g_report);
+}
+
 struct Endpoint {
     std::wstring id, guid, name;
     DWORD rate = 0, channels = 0;
@@ -252,7 +267,7 @@ static bool restartAudioService() {
         ControlService(svc, SERVICE_CONTROL_STOP, &st);
         const bool stopped = waitState(svc, SERVICE_STOPPED, 10000);
         ok = stopped && StartServiceW(svc, 0, nullptr) != 0 && waitState(svc, SERVICE_RUNNING, 10000);
-        if (!stopped) say(L"  (the audio service did not stop)\n");
+        if (!stopped) note(L"  audio service did not stop\n");
         CloseServiceHandle(svc);
         for (auto& n : restartLater) {
             SC_HANDLE d = OpenServiceW(scm, n.c_str(), SERVICE_START);
@@ -282,7 +297,7 @@ static bool registerDll() {
     std::wstring dir(exe);
     dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);
     HMODULE m = LoadLibraryW((dir + L"WarmVoiceApo.dll").c_str());
-    if (!m) { say(L"WarmVoiceApo.dll not found next to wvinstall.exe\n"); return false; }
+    if (!m) { say(L"找不到 WarmVoiceApo.dll，请把压缩包完整解压后再运行 install.bat\n"); return false; }
     auto reg = (HRESULT(STDAPICALLTYPE*)())GetProcAddress(m, "DllRegisterServer");
     const bool ok = reg && SUCCEEDED(reg());
     FreeLibrary(m);
@@ -333,7 +348,7 @@ static void writeMultiSz(HKEY k, const std::wstring& name, const std::vector<std
 // processed twice.
 static bool applySlot(const Endpoint& e, const std::wstring& slot) {
     HKEY fx = openFx(e, true);
-    if (!fx) { say(L"cannot open FxProperties for %ls (run as administrator)\n", e.name.c_str()); return false; }
+    if (!fx) { say(L"改不了“%ls”的系统设置（需要管理员权限）\n", e.name.c_str()); return false; }
     HKEY bk = nullptr;
     if (!isInstalled(e)) {   // first install: save the driver's values (never overwritten later)
         RegCreateKeyExW(HKEY_LOCAL_MACHINE, backupPath(e).c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &bk, nullptr);
@@ -361,7 +376,7 @@ static bool applySlot(const Endpoint& e, const std::wstring& slot) {
     DWORD sz = sizeof(old) - sizeof(wchar_t), type = 0;
     if (RegQueryValueExW(fx, pkeyName(clsidKey).c_str(), nullptr, &type, (BYTE*)old, &sz) == ERROR_SUCCESS && old[0] &&
         _wcsicmp(old, WV_CLSID_STRING) != 0)
-        say(L"note: this mic already has an effect %ls in this slot (saved, restored on uninstall)\n", old);
+        note(L"  replacing existing effect %ls (backed up)\n", old);
     RegSetValueExW(fx, pkeyName(clsidKey).c_str(), 0, REG_SZ, (const BYTE*)clsid.c_str(), (DWORD)((clsid.size() + 1) * 2));
 
     // Composite list present: Windows reads that one. Keep the driver's effects and add ours last.
@@ -372,7 +387,7 @@ static bool applySlot(const Endpoint& e, const std::wstring& slot) {
         for (auto& x : list) there |= _wcsicmp(x.c_str(), WV_CLSID_STRING) == 0;
         if (!there) list.push_back(clsid);
         writeMultiSz(fx, composite, list);
-        say(L"note: this mic uses a list of effects; WarmVoice added after %zu existing one(s)\n", list.size() - 1);
+        note(L"  composite list: added after %zu existing effect(s)\n", list.size() - 1);
     }
     // Processing modes: keep whatever the driver supports, make sure "default" is there.
     bool hasModes = false;
@@ -470,7 +485,7 @@ static LONGLONG fileSize(const std::wstring& path) {
 static void showApoLog(LONGLONG from) {
     const std::wstring path = wv::dataDir() + L"\\apo.log";
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) { say(L"    apo.log: (none - Windows never loaded WarmVoiceApo.dll)\n"); return; }
+    if (h == INVALID_HANDLE_VALUE) { note(L"    apo.log: none - Windows never loaded WarmVoiceApo.dll\n"); return; }
     LARGE_INTEGER sz{};
     GetFileSizeEx(h, &sz);
     if (from > sz.QuadPart) from = 0;
@@ -483,7 +498,7 @@ static void showApoLog(LONGLONG from) {
     if (len > 0) ReadFile(h, &s[0], (DWORD)len, &rd, nullptr);
     CloseHandle(h);
     s.resize(rd);
-    if (s.empty()) { say(L"    apo.log: nothing new (Windows did not load WarmVoice for this)\n"); return; }
+    if (s.empty()) { note(L"    apo.log: nothing new\n"); return; }
     const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
     std::wstring w(n, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
@@ -493,7 +508,7 @@ static void showApoLog(LONGLONG from) {
         if (b == std::wstring::npos) b = w.size();
         std::wstring line = w.substr(a, b - a);
         if (!line.empty() && line.back() == L'\r') line.pop_back();
-        if (!line.empty()) say(L"    log: %ls\n", line.c_str());
+        if (!line.empty()) note(L"    log: %ls\n", line.c_str());
         a = b + 1;
     }
 }
@@ -501,30 +516,30 @@ static void showApoLog(LONGLONG from) {
 static void reportProbe(const Endpoint& e, const Probe& p) {
     switch (p.state) {
         case Probe::Running: {
-            static const wchar_t* why[] = {L"", L" (AI library missing)", L" (AI engine error)", L" (computer too slow for AI)"};
-            say(L"  RESULT: RUNNING on \"%ls\" | AI %ls%ls | CPU %.1f%% | link %ls\n", e.name.c_str(), p.a.aiActive ? L"on" : L"OFF",
-                why[p.a.aiProblem >= 0 && p.a.aiProblem <= 3 ? p.a.aiProblem : 0], p.a.load * 100.0f, p.viaFile ? L"file" : L"global");
+            static const wchar_t* why[] = {L"", L"（AI 文件缺失）", L"（AI 出错）", L"（电脑太忙）"};
+            say(L"  结果：正常工作 | AI 降噪%ls%ls | CPU %.1f%%\n", p.a.aiActive ? L"开" : L"没开",
+                why[p.a.aiProblem >= 0 && p.a.aiProblem <= 3 ? p.a.aiProblem : 0], p.a.load * 100.0f);
+            note(L"  link %ls\n", p.viaFile ? L"file" : L"global");
             break;
         }
         case Probe::NotRunning:
-            say(L"  RESULT: the mic works, but WarmVoice is not processing it%ls\n",
-                p.linkFound ? L" (it was loaded earlier, but no audio now)" : L"");
+            say(L"  结果：麦克风有声音，但 Windows 没让暖声处理\n");
+            note(L"  link found earlier: %d\n", (int)p.linkFound);
             break;
         case Probe::Busy:
-            say(L"  RESULT: another program holds this mic in EXCLUSIVE mode (Voicemeeter, ASIO / WDM\n"
-                L"          driver mode, or a game). Windows effects - and WarmVoice - cannot run then.\n"
-                L"          Quit that program completely and run this again.\n");
+            say(L"  结果：麦克风被别的软件独占了（多半是 Voicemeeter）。被独占时 Windows 的\n"
+                L"        声音效果都不能运行。请完全退出那个软件，再运行一次。\n");
             break;
         default:
-            say(L"  RESULT: could not open the mic (error 0x%08lx)\n", (unsigned long)p.hr);
+            say(L"  结果：打不开麦克风（错误码 0x%08lx）\n", (unsigned long)p.hr);
     }
 }
 
 // ---------------------------------------------------------------- diagnostics
 static void dumpFx(const Endpoint& e) {
-    say(L"  FxProperties of \"%ls\":\n", e.name.c_str());
+    note(L"  FxProperties of \"%ls\":\n", e.name.c_str());
     HKEY fx = openFx(e, false);
-    if (!fx) { say(L"    (no FxProperties key)\n"); return; }
+    if (!fx) { note(L"    (no FxProperties key)\n"); return; }
     for (DWORD i = 0;; ++i) {
         wchar_t name[256];
         DWORD nl = 256, type = 0, size = 0;
@@ -538,7 +553,7 @@ static void dumpFx(const Endpoint& e) {
             for (const wchar_t* p = (const wchar_t*)buf.data(); *p; p += wcslen(p) + 1) v += std::wstring(v.empty() ? L"" : L" | ") + p;
         } else if (type == REG_DWORD) v = std::to_wstring(*(DWORD*)buf.data());
         else v = L"(" + std::to_wstring(size) + L" bytes)";
-        say(L"    %ls = %ls\n", name, v.c_str());
+        note(L"    %ls = %ls\n", name, v.c_str());
     }
     RegCloseKey(fx);
 }
@@ -553,7 +568,7 @@ static void dumpSystem() {
         RegQueryValueExW(k, L"CurrentBuild", nullptr, nullptr, (BYTE*)build, &s3);
         RegQueryValueExW(k, L"UBR", nullptr, nullptr, (BYTE*)&ubr, &s4);
         RegCloseKey(k);
-        say(L"Windows: %ls %ls build %ls.%lu\n", prod, disp, build, ubr);
+        note(L"Windows: %ls %ls build %ls.%lu\n", prod, disp, build, ubr);
     }
     // Programs known to grab microphones exclusively.
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -567,7 +582,7 @@ static void dumpSystem() {
             if (n.find(L"voicemeeter") != std::wstring::npos || n.find(L"vbaudio") != std::wstring::npos ||
                 n.find(L"ngenuity") != std::wstring::npos || n.find(L"nahimic") != std::wstring::npos ||
                 n.find(L"sonar") != std::wstring::npos || n.find(L"broadcast") != std::wstring::npos)
-                say(L"running: %ls (may hold or change the microphone)\n", pe.szExeFile);
+                say(L"注意：%ls 正在运行，它可能会占用或改动麦克风\n", pe.szExeFile);
         }
         CloseHandle(snap);
     }
@@ -581,45 +596,46 @@ static void dumpSystem() {
                 if (_wcsicmp(me.szModule, L"WarmVoiceApo.dll") == 0) loaded = true;
             CloseHandle(ms);
         }
-        say(L"audiodg.exe (pid %lu): WarmVoiceApo.dll %ls\n", audiodg,
+        note(L"audiodg.exe (pid %lu): WarmVoiceApo.dll %ls\n", audiodg,
             !readable ? L"unknown (cannot look inside)" : loaded ? L"LOADED" : L"not loaded");
     } else {
-        say(L"audiodg.exe: not running (no app is using audio right now)\n");
+        note(L"audiodg.exe: not running\n");
     }
 }
 
 // ---------------------------------------------------------------- commands
 static int install(const Endpoint& e, const std::wstring& slotArg) {
     prepareDataDir();
-    if (!registerDll()) { say(L"could not register the APO\n"); return 1; }
+    if (!registerDll()) { say(L"注册暖声组件失败\n"); return 1; }
     std::vector<std::wstring> slots;
     if (slotArg == L"auto") slots = {L"efx", L"mfx", L"sfx"};
     else slots = {slotArg};
-    say(L"Installing on \"%ls\"\n", e.name.c_str());
+    say(L"正在安装到：%ls\n", e.name.c_str());
     for (size_t i = 0; i < slots.size(); ++i) {
         const std::wstring& slot = slots[i];
         if (!applySlot(e, slot)) return 1;
-        say(L"[try %zu/%zu] slot %ls: restarting the Windows audio service...\n", i + 1, slots.size(), slot.c_str());
+        say(L"第 %zu/%zu 种方式：重启 Windows 声音服务并测试（声音会断几秒）…\n", i + 1, slots.size());
+        note(L"  slot %ls\n", slot.c_str());
         const LONGLONG logPos = fileSize(wv::dataDir() + L"\\apo.log");
-        if (!restartAudioService()) { say(L"  could not restart the audio service: please restart the computer.\n"); return 1; }
+        if (!restartAudioService()) { say(L"  重启声音服务失败，请重启电脑后再试一次。\n"); return 1; }
         waitForEndpoint(e.id, 8000);
         Sleep(500);
         const Probe p = probe(e, 3000);
         reportProbe(e, p);
         if (p.state != Probe::Running) showApoLog(logPos);
         if (p.state == Probe::Running) {
-            say(L"\nDONE: WarmVoice is working on \"%ls\" (slot %ls).\n", e.name.c_str(), slot.c_str());
+            say(L"\n成功：暖声已经在“%ls”上工作了。\n", e.name.c_str());
+            note(L"slot %ls\n", slot.c_str());
             return 0;
         }
         if (p.state == Probe::Busy) {
-            say(L"\nWarmVoice is installed (slot %ls), but it can only start when the other program lets go of the mic.\n",
-                slot.c_str());
+            say(L"\n暖声已经装好，但要等占用麦克风的软件退出后才能开始工作。\n");
             return 3;
         }
     }
     // Nothing worked: leave the first slot in place (harmless) and say so.
     if (slots.size() > 1) { applySlot(e, slots[0]); restartAudioService(); }
-    say(L"\nNOT WORKING: Windows did not run WarmVoice on this microphone in any slot.\n");
+    say(L"\n没成功：三种方式 Windows 都没让暖声处理这个麦克风。详细记录已保存，发给开发者即可。\n");
     dumpFx(e);
     return 4;
 }
@@ -627,21 +643,21 @@ static int install(const Endpoint& e, const std::wstring& slotArg) {
 static int uninstall(const Endpoint& e) {
     HKEY bk = nullptr;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, backupPath(e).c_str(), 0, KEY_READ, &bk) != ERROR_SUCCESS) {
-        say(L"\"%ls\": not installed\n", e.name.c_str());
+        say(L"“%ls”没装暖声\n", e.name.c_str());
         return 0;
     }
     HKEY fx = openFx(e, true);
-    if (!fx) { RegCloseKey(bk); say(L"cannot open FxProperties (run as administrator)\n"); return 1; }
+    if (!fx) { RegCloseKey(bk); say(L"改不了系统设置（需要管理员权限）\n"); return 1; }
     restoreValues(fx, bk);
     RegCloseKey(fx);
     RegCloseKey(bk);
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, backupPath(e).c_str());
-    say(L"removed from \"%ls\"\n", e.name.c_str());
+    say(L"已从“%ls”上卸载，恢复原样\n", e.name.c_str());
     return 0;
 }
 
 static int status(const Endpoint& e) {
-    say(L"\"%ls\": %ls\n", e.name.c_str(), isInstalled(e) ? L"WarmVoice installed" : L"WarmVoice NOT installed");
+    say(L"“%ls”：%ls\n", e.name.c_str(), isInstalled(e) ? L"已安装暖声" : L"没装暖声");
     const LONGLONG logPos = fileSize(wv::dataDir() + L"\\apo.log");
     const Probe p = probe(e, 2500);
     reportProbe(e, p);
@@ -654,7 +670,7 @@ static int diagnose(const Endpoint& e) {
     dumpFx(e);
     const int rc = status(e);
     dumpSystem();   // after the probe: is the DLL inside audiodg now?
-    say(L"\nLast lines of apo.log:\n");
+    note(L"\nLast lines of apo.log:\n");
     const LONGLONG sz = fileSize(wv::dataDir() + L"\\apo.log");
     showApoLog(sz > 3000 ? sz - 3000 : 0);
     return rc;
@@ -676,29 +692,28 @@ int wmain(int argc, wchar_t** argv) {
         _wfopen_s(&g_report, (wv::dataDir() + L"\\report.txt").c_str(), L"ab");
         SYSTEMTIME t;
         GetLocalTime(&t);
-        say(L"\n===== wvinstall %ls  %04d-%02d-%02d %02d:%02d:%02d =====\n", cmd.c_str(), t.wYear, t.wMonth, t.wDay, t.wHour,
+        note(L"\n===== wvinstall %ls  %04d-%02d-%02d %02d:%02d:%02d =====\n", cmd.c_str(), t.wYear, t.wMonth, t.wDay, t.wHour,
             t.wMinute, t.wSecond);
     }
     auto finish = [&](int rc) {
         if (g_report) { std::fclose(g_report); g_report = nullptr; }
         CoUninitialize();
-        if (pauseAtEnd) { std::fputws(L"\nPress Enter to close.", stdout); std::getwchar(); }
+        if (pauseAtEnd) { std::fputws(L"\n按回车键关闭这个窗口。", stdout); std::getwchar(); }
         return rc;
     };
     auto eps = listEndpoints();
     if (cmd == L"list") {
         for (size_t i = 0; i < eps.size(); ++i) {
             std::wprintf(L"[%zu] %ls  %lu Hz %lu ch%ls\n     %ls\n", i, eps[i].name.c_str(), eps[i].rate, eps[i].channels,
-                         isInstalled(eps[i]) ? L"  <- WarmVoice installed" : L"", eps[i].id.c_str());
+                         isInstalled(eps[i]) ? L"  ← 已装暖声" : L"", eps[i].id.c_str());
             if (eps[i].rate && eps[i].rate < 32000)
-                std::wprintf(L"     (this mic runs at %lu Hz: high-frequency restoration cannot help it)\n", eps[i].rate);
+                std::wprintf(L"     （这个麦克风只有 %lu Hz，补高频帮不了它）\n", eps[i].rate);
         }
-        if (eps.empty()) std::wprintf(L"No active microphone found.\n");
+        if (eps.empty()) std::wprintf(L"没找到可用的麦克风。\n");
         return finish(0);
     }
     if (eps.empty()) {
-        say(L"No active microphone found. Is one plugged in and enabled, and is the Windows audio\n"
-            L"service (Audiosrv) running? Try: net start audiosrv\n");
+        say(L"没找到可用的麦克风。请检查麦克风是否插好、在 Windows 声音设置里是否被禁用。\n");
         return finish(2);
     }
     std::vector<const Endpoint*> targets;
@@ -726,7 +741,7 @@ int wmain(int argc, wchar_t** argv) {
                     targets.push_back(&eps[i]);
         }
     }
-    if (targets.empty()) { say(L"choose a microphone: wvinstall list\n"); return finish(2); }
+    if (targets.empty()) { say(L"没找到指定的麦克风\n"); return finish(2); }
     std::wstring slot = L"auto";
     for (size_t i = 2; i + 1 < args.size(); ++i)
         if (args[i] == L"--slot") slot = args[i + 1];
@@ -736,9 +751,9 @@ int wmain(int argc, wchar_t** argv) {
         else if (cmd == L"uninstall") rc |= uninstall(*e);
         else if (cmd == L"status") rc |= status(*e);
         else if (cmd == L"diagnose") rc |= diagnose(*e);
-        else { say(L"unknown command\n"); return finish(2); }
+        else { say(L"未知命令\n"); return finish(2); }
     }
     if (cmd == L"uninstall") restartAudioService();
-    say(L"Report saved to %ls\\report.txt\n", wv::dataDir().c_str());
+    say(L"记录已保存到 %ls\\report.txt\n", wv::dataDir().c_str());
     return finish(rc);
 }
