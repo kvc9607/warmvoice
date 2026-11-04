@@ -13,9 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build core, tools, tests, APO
+      - name: Build core, tools, tests, APO, app
         run: |
-          cmake -S . -B build -A x64
+          nuget install Microsoft.Web.WebView2 -Version 1.0.2651.64 -OutputDirectory deps
+          cmake -S . -B build -A x64 -DWEBVIEW2_DIR="$PWD/deps/Microsoft.Web.WebView2.1.0.2651.64"
           cmake --build build --config Release
 
       - name: Unit tests (AI stand-in)
@@ -47,6 +48,8 @@ jobs:
         run: |
           mkdir -p pkg/WarmVoice
           cp build/Release/WarmVoiceApo.dll build/Release/warmvoice_ai.dll build/Release/wvinstall.exe build/Release/wvproc.exe pkg/WarmVoice/
+          cp build/Release/WarmVoice.exe pkg/WarmVoice/
+          cp -r build/Release/ui pkg/WarmVoice/ui
           cp packaging/install.bat packaging/uninstall.bat "packaging/说明.txt" pkg/WarmVoice/
           cp LICENSE THIRD_PARTY.md pkg/WarmVoice/
           cd pkg && 7z a -tzip ../WarmVoice-windows-x64.zip WarmVoice >/dev/null
@@ -70,6 +73,7 @@ jobs:
             build/Release/wvinstall.exe
             build/Release/wvproc.exe
             build/Release/warmvoice_ai.dll
+            build/Release/WarmVoice.exe
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>暖声</title>
+<style>
+:root{--bg:#0E1012;--side:#121417;--panel:#171A1E;--raised:#1E2227;--line:#2B3037;--text:#EDEEF0;--muted:#A3ABB5;--dim:#858D98;--off:#3A414A;--accent:#F0A35E;--good:#6FCF97;--bad:#E06C5A}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei UI","PingFang SC","Noto Sans SC",system-ui,sans-serif;font-size:14px;user-select:none}
+button,select,input{font-family:inherit}
+.app{display:flex;height:100%}
+.side{width:480px;flex-shrink:0;display:flex;flex-direction:column;gap:16px;padding:20px 22px 22px;background:var(--bg);overflow-y:auto}
+body.detail .side{width:380px;background:var(--side);border-right:1px solid var(--line)}
+.main{flex:1;min-width:0;padding:24px 28px;display:none;flex-direction:column;gap:18px;overflow-y:auto}
+body.detail .main{display:flex}
+.row{display:flex;align-items:center;gap:10px}
+.between{justify-content:space-between}
+.logo{width:40px;height:40px;border-radius:12px;background:var(--accent);display:flex;align-items:center;justify-content:center}
+.brand b{display:block;font-size:20px;letter-spacing:1px}.brand span{font-size:12px;color:var(--dim)}
+.power{display:flex;align-items:center;gap:10px;height:44px;padding:0 8px 0 16px;border-radius:22px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
+.sw{width:48px;height:28px;border-radius:14px;background:var(--off);position:relative;transition:background .15s}
+.sw i{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:11px;background:var(--bg);transition:left .15s}
+.on .sw{background:var(--accent)}.on .sw i{left:23px}
+.mini{width:44px;height:26px;border-radius:13px;border:0;padding:0;position:relative;cursor:pointer;background:var(--off);flex-shrink:0}
+.mini i{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:10px;background:var(--bg);transition:left .15s}
+.mini.on{background:var(--accent)}.mini.on i{left:21px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.label{font-size:13px;color:var(--muted)}
+.small{font-size:12px;color:var(--dim)}
+.status{display:flex;align-items:center;gap:6px;font-size:12px}
+.dot{width:8px;height:8px;border-radius:4px;background:currentColor}
+canvas{display:block;width:100%}
+select{width:100%;height:46px;appearance:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--text);font-size:14px;padding:0 14px}
+.tones{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+body.detail .tones{grid-template-columns:1fr}
+.tone{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:12px;border-radius:12px;border:1.5px solid var(--line);background:var(--panel);color:var(--text);text-align:left;cursor:pointer}
+.tone.sel{border-color:var(--accent);background:rgba(240,163,94,.10)}
+.tone b{font-size:15px}.tone span{font-size:12px;color:var(--muted);line-height:1.4}
+.big{font-size:22px;font-weight:700;color:var(--accent)}
+input[type=range]{-webkit-appearance:none;width:100%;height:28px;background:transparent;margin:0}
+input[type=range]::-webkit-slider-runnable-track{height:8px;border-radius:4px;background:linear-gradient(90deg,var(--accent) var(--p,50%),var(--line) var(--p,50%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;margin-top:-8px;border-radius:12px;background:var(--text);border:4px solid var(--accent)}
+.ticks{display:flex;justify-content:space-between;font-size:12px;color:var(--dim)}
+.btn{height:44px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:var(--raised);color:var(--text);font-size:14px;cursor:pointer}
+.btn.primary{background:var(--accent);color:var(--bg);border:0;font-weight:700}
+.btn.ghost{background:transparent;color:var(--muted);font-size:13px;padding:0 12px}
+.seg{flex:1;display:flex;height:44px;padding:4px;border-radius:22px;background:var(--raised);border:1px solid var(--line)}
+.seg button{flex:1;border:0;border-radius:18px;background:transparent;color:var(--muted);font-weight:700;cursor:pointer}
+.seg button.sel{background:var(--accent);color:var(--bg)}
+.seg button.sel.raw{background:var(--text)}
+.check{display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer}
+.box{width:20px;height:20px;border-radius:5px;border:2px solid var(--dim)}
+body.detail .box{background:var(--accent);border-color:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.wide{grid-column:span 2;border-color:var(--accent)}
+.num{width:24px;height:24px;border-radius:12px;background:var(--raised);color:var(--muted);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.wide .num{background:var(--accent);color:var(--bg)}
+.cardtitle{font-size:15px;font-weight:700;flex:1}
+.desc{margin:0;font-size:12px;line-height:1.5;color:var(--muted)}
+.params{display:flex;gap:8px}
+.param{background:var(--raised);border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.param span{font-size:11px;color:var(--dim)}.param b{font-size:14px}
+.param input[type=range]{height:18px}
+.param input[type=range]::-webkit-slider-runnable-track{height:6px}
+.param input[type=range]::-webkit-slider-thumb{width:14px;height:14px;margin-top:-4px;border-width:3px}
+.param select{height:24px;border:0;background:transparent;padding:0;font-weight:700}
+.disabled .vis,.disabled .params{opacity:.35}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.flow span{height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--accent);font-size:13px;display:flex;align-items:center;gap:6px;background:var(--panel)}
+.flow span.off{border-color:var(--line);color:var(--dim)}
+.warn{background:rgba(224,108,90,.12);border:1px solid var(--bad);color:#F2B3A8;border-radius:12px;padding:10px 12px;font-size:13px;display:none}
+</style>
+</head>
+<body>
+<div class="app">
+<!-- ======================= simple panel ======================= -->
+<div class="side">
+  <div class="row between">
+    <div class="row" style="gap:12px">
+      <div class="logo"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M4 12v0M8 8v8M12 4v16M16 8v8M20 12v0" stroke="#0E1012" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg></div>
+      <div class="brand"><b>暖声</b><span>WarmVoice</span></div>
+    </div>
+    <button class="power on" id="power"><span id="powerLabel">已开启</span><span class="sw"><i></i></span></button>
+  </div>
+
+  <div class="warn" id="warn"></div>
+
+  <div class="card">
+    <div class="row between"><span class="label">你的声音</span><span class="status" id="status"><span class="dot"></span><span id="statusText">等待麦克风…</span></span></div>
+    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输入</span><canvas id="mIn" height="40"></canvas></div>
+    <div class="row"><span class="small" style="width:44px;flex-shrink:0;white-space:nowrap">输出</span><canvas id="mOut" height="40"></canvas></div>
+    <div class="row between small" style="padding-left:54px"><span id="inDb">输入 — dB</span><span id="aiText">AI 降噪</span><span id="outDb">输出 — dB</span></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <label class="label" for="mic">麦克风</label>
+    <select id="mic"></select>
+    <span class="small" id="micHint"></span>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <span class="label">音色</span>
+    <div class="tones" id="tones"></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div class="row between"><label class="label" for="volume">音量</label><span class="big" id="volLabel">+12 dB</span></div>
+    <input type="range" id="volume" min="0" max="30" step="1" value="12">
+    <div class="ticks"><span>正常</span><span>大声</span><span>很大</span></div>
+  </div>
+
+  <div class="card" style="padding:14px 16px">
+    <div class="row between"><b>录音对比</b><span class="small">录一段话，切换开关听区别</span></div>
+    <button class="btn" id="recBtn" style="border-style:dashed;height:52px"><span style="display:inline-block;width:12px;height:12px;border-radius:6px;background:var(--bad);margin-right:8px"></span>开始录音（10 秒）</button>
+    <div id="recCtl" style="display:none;flex-direction:column;gap:10px">
+      <canvas id="recWave" height="40"></canvas>
+      <div class="row">
+        <button class="btn primary" id="playBtn" style="width:44px;padding:0;border-radius:22px">▶</button>
+        <div class="seg"><button id="abRaw">原声</button><button id="abFx" class="sel">暖声效果</button></div>
+        <button class="btn ghost" id="reRec">重录</button>
+      </div>
+      <span class="small" id="recHint">播放中随时切换，位置不变</span>
+    </div>
+  </div>
+
+  <div class="row between" style="margin-top:auto;border-top:1px solid var(--line);padding-top:14px">
+    <label class="check" id="detailToggle"><span class="box"></span><span>详细模式</span><span class="small">显示全部调节</span></label>
+  </div>
+</div>
+
+<!-- ======================= detail panel ======================= -->
+<div class="main">
+  <div class="row between">
+    <div><div style="font-size:20px;font-weight:700">调节详情</div><div class="label">声音按 1 → 7 的顺序处理，每一步都能单独开关。不懂的保持默认就好。</div></div>
+    <div class="row"><button class="btn" id="resetBtn">恢复默认</button></div>
+  </div>
+  <div class="flow" id="flow"></div>
+  <div class="grid" id="cards"></div>
+  <div class="card">
+    <div class="row between"><div class="row" style="gap:18px"><b>长期频谱</b>
+      <span class="small"><span style="display:inline-block;width:10px;height:10px;background:var(--off);margin-right:6px"></span>麦克风原始输入</span>
+      <span class="small"><span style="display:inline-block;width:10px;height:10px;background:var(--accent);margin-right:6px"></span>你的嗓音（降噪后）</span></div>
+      <span class="small" id="specInfo"></span></div>
+    <canvas id="spec" height="150"></canvas>
+  </div>
+</div>
+</div>
+
+<script>
+// ---------------------------------------------------------------- bridge
+const host = window.chrome && window.chrome.webview;
+const send = (...parts) => host ? host.postMessage(parts.join('|')) : console.log('send', parts.join('|'));
+let S = null;   // user settings (from the app)
+let M = {};     // meters / analysis
+
+// ---------------------------------------------------------------- stages
+const STAGES = [ // index = UserParams.stageOn index
+  {k:1, name:'AI 降噪', title:'AI 降噪', desc:'键盘、风扇、空调、电流声一次去掉，只留人声。强度拉满时，不说话就完全静音', vis:'denoise'},
+  {k:2, name:'补高频', title:'AI 音质修复', desc:'自动检测麦克风有没有丢高频（很多耳机麦、无线、蓝牙麦会丢），丢了才补回来，听着像高码率', vis:'restore'},
+  {k:3, name:'智能优化', title:'智能声音优化', wide:true, desc:'先听你说话，分析你的嗓音，找出发闷、刺耳、嘶声、箱音，一处一处自动修好', vis:'optimize'},
+  {k:4, name:'质感', title:'质感', desc:'让声音饱满、有厚度、有空气感，像好麦克风录出来的', vis:'texture'},
+  {k:5, name:'EQ', title:'EQ 均衡器', desc:'按自己口味改：拖动圆点调厚薄和明亮。不懂可以不动，前面已经自动调好', vis:'eq'},
+  {k:6, name:'稳音量', title:'稳音量（压缩）', desc:'管每一个字：字头太冲马上压下去，每个字都一样清楚', vis:'comp'},
+  {k:7, name:'统一音量', title:'统一音量 + 防爆音', desc:'管整体：离麦远了、说话小了，几秒内慢慢拉回来；喊叫也不会爆音', vis:'level'},
+];
+const TONES = [{n:'温暖',d:'厚实醇厚，像桌面电容麦'},{n:'清亮',d:'通透清楚，适合游戏报点'},{n:'原声',d:'只降噪和放大，不改音色'}];
+
+function el(tag, attrs={}, html=''){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);e.innerHTML=html;return e}
+function setRangeFill(r){const p=(r.value-r.min)/(r.max-r.min)*100;r.style.setProperty('--p',p+'%')}
+
+function paramSlider(label, key, min, max, step, fmt){
+  const d=el('div',{class:'param'}); const s=el('span',{},label); const r=el('input',{type:'range',min,max,step});
+  r.value=S[key]; setRangeFill(r); s.textContent=label+' '+fmt(+r.value);
+  r.oninput=()=>{setRangeFill(r); s.textContent=label+' '+fmt(+r.value); S[key]=+r.value; send('set',key,r.value)};
+  d.append(s,r); return d;
+}
+function paramSelect(label, key, opts){
+  const d=el('div',{class:'param'}); d.append(el('span',{},label)); const sel=el('select');
+  opts.forEach((o,i)=>sel.append(el('option',{value:i},o))); sel.value=S[key];
+  sel.onchange=()=>{S[key]=+sel.value; send('set',key,sel.value)}; d.append(sel); return d;
+}
+function paramButton(label, cmd){const b=el('button',{class:'btn',style:'flex:1;height:auto;min-height:44px;color:var(--accent);border-color:var(--accent)'},label);b.onclick=()=>send(...cmd);return b}
+
+function buildCards(){
+  const box=document.getElementById('cards'); box.innerHTML='';
+  STAGES.forEach(st=>{
+    const c=el('div',{class:'card'+(st.wide?' wide':'')}); c.dataset.stage=st.k;
+    const head=el('div',{class:'row'}); head.append(el('span',{class:'num'},st.k), el('span',{class:'cardtitle'},st.title));
+    const sw=el('button',{class:'mini','aria-label':'开关：'+st.title},'<i></i>');
+    sw.onclick=()=>{S['stage.'+st.k]=S['stage.'+st.k]?0:1; send('set','stage.'+st.k,S['stage.'+st.k]); refreshStages()};
+    head.append(sw); c.append(head, el('p',{class:'desc'},st.desc));
+    const vis=el('canvas',{class:'vis',height:96}); vis.dataset.vis=st.vis; c.append(vis);
+    const ps=el('div',{class:'params'});
+    if(st.vis==='denoise') ps.append(paramSlider('强度','denoise',0,1,0.05,v=>Math.round(v*100)+'%'));
+    if(st.vis==='restore') { ps.append(paramSlider('修复程度','restore',0,1,0.05,v=>Math.round(v*100)+'%')); const p=el('div',{class:'param'},'<span>检测结果</span><b id="cutoffText">检测中…</b>'); ps.append(p); }
+    if(st.vis==='optimize'){ ps.append(paramSlider('优化程度','optimize',0,1,0.05,v=>Math.round(v*100)+'%')); ps.append(el('div',{class:'param'},'<span>嗓音档案</span><b id="profileText">学习中…</b>')); ps.append(paramButton('重新分析我的嗓音',['profile','reset'])); }
+    if(st.vis==='texture'){ ps.append(paramSlider('质感','texture',0,1,0.05,v=>Math.round(v*100)+'%')); ps.append(paramSelect('风格','textureStyle',['电容麦','电子管','广播'])); }
+    if(st.vis==='eq'){ ps.append(el('div',{class:'param'},'<span>提示</span><b>上下拖动圆点</b>')); ps.append(paramButton('全部归零',['eq','flat'])); }
+    if(st.vis==='comp'){ ps.append(paramSlider('开始压的位置','compThr',-12,6,1,v=>(v>0?'+':'')+v+' dB')); ps.append(paramSlider('压多狠','compRatio',1,8,0.5,v=>v+' : 1')); ps.append(paramSelect('反应','compSpeed',['慢','中','快'])); }
+    if(st.vis==='level'){ ps.append(el('div',{class:'param'},'<span>目标音量</span><b id="targetText">—</b>')); ps.append(el('div',{class:'param'},'<span>正在压</span><b id="grText">—</b>')); }
+    c.append(ps); box.append(c);
+  });
+  setupEqDrag();
+  const flow=document.getElementById('flow'); flow.innerHTML='';
+  STAGES.forEach((st,i)=>{const s=el('span',{},'<b>'+st.k+'</b>'+st.name); s.dataset.stage=st.k; flow.append(s); if(i<STAGES.length-1) flow.append(el('span',{style:'border:0;background:none;padding:0;color:var(--off)'},'→'))});
+}
+function refreshStages(){
+  document.querySelectorAll('[data-stage]').forEach(n=>{
+    const on=!!S['stage.'+n.dataset.stage];
+    if(n.classList.contains('card')){ n.classList.toggle('disabled',!on); n.querySelector('.mini').classList.toggle('on',on); }
+    else n.classList.toggle('off',!on);
+  });
+}
+
+// ---------------------------------------------------------------- simple panel
+function buildSimple(){
+  const t=document.getElementById('tones'); t.innerHTML='';
+  TONES.forEach((x,i)=>{const b=el('button',{class:'tone'+(S.tone===i?' sel':'')},'<b>'+x.n+'</b><span>'+x.d+'</span>');b.onclick=()=>{S.tone=i;send('set','tone',i);buildSimple()};t.append(b)});
+  const v=document.getElementById('volume'); v.value=S.volume; setRangeFill(v); document.getElementById('volLabel').textContent='+'+S.volume+' dB';
+  v.oninput=()=>{setRangeFill(v);S.volume=+v.value;document.getElementById('volLabel').textContent='+'+v.value+' dB';send('set','volume',v.value)};
+  const p=document.getElementById('power'); p.classList.toggle('on',!!S.enabled); document.getElementById('powerLabel').textContent=S.enabled?'已开启':'已关闭';
+}
+document.getElementById('power').onclick=()=>{S.enabled=S.enabled?0:1;send('set','enabled',S.enabled);buildSimple()};
+document.getElementById('detailToggle').onclick=()=>{const d=!document.body.classList.contains('detail');document.body.classList.toggle('detail',d);send('ui','detail',d?1:0);setTimeout(drawAll,50)};
+document.getElementById('mic').onchange=e=>send('mic','select',e.target.value);
+document.getElementById('resetBtn').onclick=()=>send('reset','all');
+
+// recording A/B
+let rec={state:'idle',ab:'fx',pos:0,dur:0,wave:[]};
+document.getElementById('recBtn').onclick=()=>send('rec','start');
+document.getElementById('reRec').onclick=()=>send('rec','start');
+document.getElementById('playBtn').onclick=()=>send('rec',rec.state==='playing'?'stop':'play');
+document.getElementById('abRaw').onclick=()=>{rec.ab='raw';send('rec','ab','raw');showRec()};
+document.getElementById('abFx').onclick=()=>{rec.ab='fx';send('rec','ab','fx');showRec()};
+function showRec(){
+  const recording=rec.state==='recording', ready=rec.state==='ready'||rec.state==='playing';
+  const b=document.getElementById('recBtn'); b.style.display=ready?'none':'block';
+  b.innerHTML=recording?'正在录音… 说一句平时打游戏的话（'+Math.ceil(rec.dur-rec.pos)+' 秒）':'<span style="display:inline-block;width:12px;height:12px;border-radius:6px;background:var(--bad);margin-right:8px"></span>开始录音（10 秒）';
+  document.getElementById('recCtl').style.display=ready?'flex':'none';
+  document.getElementById('playBtn').textContent=rec.state==='playing'?'❚❚':'▶';
+  document.getElementById('abRaw').className=rec.ab==='raw'?'sel raw':'';
+  document.getElementById('abFx').className=rec.ab==='fx'?'sel':'';
+  document.getElementById('recHint').textContent=(rec.ab==='fx'?'正在放：加了效果':'正在放：原始声音')+'，播放中随时切换，位置不变'+(document.body.classList.contains('detail')?'；改右边参数会马上听到变化':'');
+  drawRecWave();
+}
+
+// ---------------------------------------------------------------- drawing
+const C=getComputedStyle(document.documentElement);
+const col=n=>C.getPropertyValue(n).trim();
+function prep(cv){const r=cv.getBoundingClientRect();const dpr=devicePixelRatio||1;cv.width=Math.max(1,r.width*dpr);cv.height=(+cv.getAttribute('height'))*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);return [g,r.width,+cv.getAttribute('height')]}
+const hist={in:new Array(44).fill(-90),out:new Array(44).fill(-90)};
+function drawMeter(id,arr,color){const cv=document.getElementById(id);const [g,w,h]=prep(cv);const n=arr.length,bw=w/n;
+  arr.forEach((db,i)=>{const v=Math.max(0,Math.min(1,(db+70)/70));const bh=Math.max(2,v*h);g.fillStyle=color;g.fillRect(i*bw+1,(h-bh)/2,bw-2,bh)})}
+function drawRecWave(){const cv=document.getElementById('recWave');if(!cv.offsetParent)return;const [g,w,h]=prep(cv);const n=rec.wave.length||1;const bw=w/n;
+  rec.wave.forEach((v,i)=>{const played=rec.dur?i/n<rec.pos/rec.dur:false;g.fillStyle=rec.ab==='fx'?(played?col('--accent'):'rgba(240,163,94,.45)'):(played?col('--muted'):'#5B6470');const bh=Math.max(2,v*h);g.fillRect(i*bw+1,(h-bh)/2,bw-2,bh)});
+  if(rec.dur){g.fillStyle=col('--text');g.fillRect(w*rec.pos/rec.dur,0,2,h)}}
+// biquad response (RBJ), for the EQ graph
+function bq(type,f0,q,gain,fs=48000){const A=Math.pow(10,gain/40),w=2*Math.PI*f0/fs,cw=Math.cos(w),sw=Math.sin(w),al=sw/(2*q);let b,a;
+  if(type==='pk'){b=[1+al*A,-2*cw,1-al*A];a=[1+al/A,-2*cw,1-al/A]}
+  else{const s=q,alS=sw/2*Math.sqrt((A+1/A)*(1/s-1)+2),sA=2*Math.sqrt(A)*alS;
+    if(type==='ls'){b=[A*((A+1)-(A-1)*cw+sA),2*A*((A-1)-(A+1)*cw),A*((A+1)-(A-1)*cw-sA)];a=[(A+1)+(A-1)*cw+sA,-2*((A-1)+(A+1)*cw),(A+1)+(A-1)*cw-sA]}
+    else{b=[A*((A+1)+(A-1)*cw+sA),-2*A*((A-1)+(A+1)*cw),A*((A+1)+(A-1)*cw-sA)];a=[(A+1)-(A-1)*cw+sA,2*((A-1)-(A+1)*cw),(A+1)-(A-1)*cw-sA]}}
+  return f=>{const ww=2*Math.PI*f/fs;const re=(c)=>c[0]+c[1]*Math.cos(ww)+c[2]*Math.cos(2*ww),im=(c)=>-(c[1]*Math.sin(ww)+c[2]*Math.sin(2*ww));
+    return 10*Math.log10((re(b)**2+im(b)**2)/(re(a)**2+im(a)**2))}}
+const fx=(f,w)=>w*Math.log(f/40)/Math.log(18000/40), fy=(db,h)=>h/2-db*(h/2-8)/12;
+function eqNodes(){return [0,1,2,3,4].map(k=>({hz:S['eq.'+k+'.hz'],g:S['eq.'+k+'.gain'],q:S['eq.'+k+'.q'],t:k===0?'ls':k===4?'hs':'pk'}))}
+function drawEq(cv){const [g,w,h]=prep(cv);g.strokeStyle=col('--line');g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();
+  const fs=eqNodes().map(n=>bq(n.t,n.hz,n.q,n.g));g.strokeStyle=col('--accent');g.lineWidth=2.5;g.beginPath();
+  for(let x=0;x<=w;x+=2){const f=40*Math.pow(18000/40,x/w);let db=0;fs.forEach(r=>db+=r(f));x?g.lineTo(x,fy(db,h)):g.moveTo(x,fy(db,h))}g.stroke();
+  eqNodes().forEach(n=>{g.beginPath();g.arc(fx(n.hz,w),fy(n.g,h),6,0,7);g.fillStyle=col('--bg');g.fill();g.stroke()});
+  g.fillStyle=col('--dim');g.font='10px sans-serif';[100,1000,10000].forEach(f=>g.fillText(f>=1000?f/1000+'k':f,fx(f,w)-8,h-2))}
+function setupEqDrag(){const cv=document.querySelector('canvas[data-vis=eq]');let drag=-1;
+  cv.onpointerdown=e=>{const r=cv.getBoundingClientRect();const x=e.clientX-r.left;let best=1e9;eqNodes().forEach((n,i)=>{const d=Math.abs(fx(n.hz,r.width)-x);if(d<best){best=d;drag=i}});cv.setPointerCapture(e.pointerId)};
+  cv.onpointermove=e=>{if(drag<0)return;const r=cv.getBoundingClientRect();const h=r.height;let db=(h/2-(e.clientY-r.top))*12/(h/2-8);db=Math.round(Math.max(-12,Math.min(12,db))*2)/2;S['eq.'+drag+'.gain']=db;drawEq(cv)};
+  cv.onpointerup=()=>{if(drag>=0)send('set','eq.'+drag+'.gain',S['eq.'+drag+'.gain']);drag=-1}}
+function drawGauge(cv,v,label){const [g,w,h]=prep(cv);const cx=w/2,cy=h-14,r=Math.min(w/2-10,h-24);g.lineWidth=10;g.lineCap='round';
+  g.strokeStyle=col('--line');g.beginPath();g.arc(cx,cy,r,Math.PI,0);g.stroke();g.strokeStyle=col('--accent');g.beginPath();g.arc(cx,cy,r,Math.PI,Math.PI+Math.PI*Math.max(0.001,v));g.stroke();
+  g.fillStyle=col('--text');g.font='bold 17px sans-serif';g.textAlign='center';g.fillText(label,cx,cy-4)}
+function drawLtas(cv,raw,voice,bars){const [g,w,h]=prep(cv);if(!raw||!raw.length)return;const n=raw.length,bw=w/n;
+  const mx=Math.max(...raw,...voice);const y=v=>Math.max(2,Math.min(h,(v-(mx-70))/70*h));
+  for(let i=0;i<n;i++){g.fillStyle=col('--off');g.fillRect(i*bw+1,h-y(raw[i]),bw-2,y(raw[i]));g.fillStyle=col('--accent');const vv=voice[i];g.fillRect(i*bw+bw*.25,h-y(vv),bw*.5,y(vv))}}
+function drawAll(){
+  drawMeter('mIn',hist.in,'#5B6470');drawMeter('mOut',hist.out,col('--accent'));drawRecWave();
+  if(!document.body.classList.contains('detail')||!S)return;
+  document.querySelectorAll('canvas[data-vis]').forEach(cv=>{const v=cv.dataset.vis;
+    if(v==='eq')drawEq(cv);
+    else if(v==='denoise')drawGauge(cv,S.denoise,Math.round(S.denoise*100)+'%');
+    else if(v==='texture')drawGauge(cv,S.texture,Math.round(S.texture*100)+'%');
+    else if(v==='restore')drawLtas(cv,M.raw,M.voice);
+    else if(v==='optimize'){const [g,w,h]=prep(cv);if(!M.autoEq)return;const fs=M.autoEq.map(b=>bq(b.t,b.hz,b.q,b.g));g.strokeStyle=col('--line');g.beginPath();g.moveTo(0,h/2);g.lineTo(w,h/2);g.stroke();g.strokeStyle=col('--accent');g.lineWidth=2.8;g.beginPath();for(let x=0;x<=w;x+=2){const f=40*Math.pow(18000/40,x/w);let db=0;fs.forEach(r=>db+=r(f));x?g.lineTo(x,fy(db,h)):g.moveTo(x,fy(db,h))}g.stroke()}
+    else if(v==='comp'){const [g,w,h]=prep(cv);const s=Math.min(w,h)-8,x0=(w-s)/2,y0=4;g.strokeStyle=col('--line');g.strokeRect(x0,y0,s,s);const t=(S.compThr+30)/40;g.strokeStyle=col('--accent');g.lineWidth=2.5;g.beginPath();g.moveTo(x0,y0+s);g.lineTo(x0+s*t,y0+s-s*t);g.lineTo(x0+s,y0+s-s*t-(s-s*t)/S.compRatio);g.stroke()}
+    else if(v==='level'){const [g,w,h]=prep(cv);const lv=Math.max(0,Math.min(1,((M.out??-90)+60)/60));const n=30;for(let i=0;i<n;i++){const lit=i/n<lv,hot=i>=27;g.fillStyle=lit?(hot?col('--bad'):col('--accent')):(hot?'rgba(224,108,90,.25)':col('--line'));g.fillRect(i*w/n+1,h/2-11,w/n-3,22)}}
+  });
+  drawLtas(document.getElementById('spec'),M.raw,M.voice);
+}
+window.addEventListener('resize',drawAll);
+
+// ---------------------------------------------------------------- messages from the app
+function onState(s){S=s;buildSimple();buildCards();refreshStages();drawAll()}
+const PROBLEM=['', 'AI 降噪文件缺失，现在只做音量和音色处理。请重新安装。','AI 降噪出错，已自动停用，其他处理照常。','电脑太忙，AI 降噪已暂停，其他处理照常。'];
+function onMeters(m){M=m;
+  hist.in.push(m.in);hist.in.shift();hist.out.push(m.running?m.out:-90);hist.out.shift();
+  const st=document.getElementById('status');
+  if(!m.installed){st.style.color=col('--bad');document.getElementById('statusText').textContent='还没装到这个麦克风';}
+  else if(!m.running){st.style.color=col('--dim');document.getElementById('statusText').textContent='已安装，等待有软件使用麦克风';}
+  else{st.style.color=col('--good');document.getElementById('statusText').textContent=S&&S.enabled?'正在处理':'已暂停';}
+  document.getElementById('inDb').textContent='输入 '+(m.running?m.in.toFixed(0):'—')+' dB';
+  document.getElementById('outDb').textContent='输出 '+(m.running?m.out.toFixed(0):'—')+' dB';
+  document.getElementById('aiText').textContent=m.ai?'AI 降噪 · CPU '+(m.load*100).toFixed(0)+'%':'AI 降噪未运行';
+  const w=document.getElementById('warn');w.textContent=PROBLEM[m.problem]||'';w.style.display=m.problem?'block':'none';
+  const set=(id,t)=>{const e=document.getElementById(id);if(e)e.textContent=t};
+  set('cutoffText',m.rate<32000?('麦克风格式 '+m.rate/1000+'kHz，无法补'):m.cutoff>0&&m.cutoff<11000?('只到 '+(m.cutoff/1000).toFixed(1)+'kHz，正在补'):'不缺高频');
+  set('profileText',m.calibrated?'已学好':'学习中 '+Math.min(100,Math.round(m.frames/5))+'%');
+  set('targetText',m.target.toFixed(0)+' dB');set('grText','−'+m.gr.toFixed(1)+' dB');
+  set('specInfo',m.running?('AI '+(m.ai?'开':'关')+' · CPU '+(m.load*100).toFixed(1)+'% · 延迟 '+m.latency.toFixed(0)+' 毫秒'):'');
+  drawAll();
+}
+function onMics(x){const s=document.getElementById('mic');s.innerHTML='';x.list.forEach(m=>{const o=el('option',{value:m.id},m.name+(m.installed?'':'（未安装暖声）'));if(m.id===x.current)o.selected=true;s.append(o)});
+  const cur=x.list.find(m=>m.id===x.current);document.getElementById('micHint').textContent=cur?(cur.installed?'✓ 已装到这个麦克风上，游戏和 Discord 里不用改设置':'这个麦克风还没装暖声：以管理员身份运行 install.bat'):''}
+function onRec(r){rec=Object.assign(rec,r);showRec()}
+if(host){host.addEventListener('message',e=>{const d=e.data;if(d.type==='state')onState(d.user);else if(d.type==='meters')onMeters(d);else if(d.type==='mics')onMics(d);else if(d.type==='rec')onRec(d)});send('ready')}
+else{ // opened in a normal browser: demo data so the page can be previewed
+  onState({enabled:1,tone:0,volume:12,denoise:1,restore:0.8,optimize:0.75,texture:0.5,textureStyle:0,compThr:-1,compRatio:2.5,compSpeed:1,
+    'stage.1':1,'stage.2':1,'stage.3':1,'stage.4':1,'stage.5':1,'stage.6':1,'stage.7':1,
+    'eq.0.hz':80,'eq.0.gain':0,'eq.0.q':0.7,'eq.1.hz':250,'eq.1.gain':0,'eq.1.q':1,'eq.2.hz':1000,'eq.2.gain':0,'eq.2.q':1,'eq.3.hz':4000,'eq.3.gain':0,'eq.3.q':1,'eq.4.hz':12000,'eq.4.gain':0,'eq.4.q':0.7});
+  onMics({list:[{id:'a',name:'耳机麦克风 (HyperX Cloud Alpha Wireless)',installed:true}],current:'a'});
+  setInterval(()=>{const t=Date.now()/300;onMeters({installed:1,running:1,in:-40+20*Math.abs(Math.sin(t)),out:-20+8*Math.abs(Math.sin(t)),ai:1,load:0.04,problem:0,rate:48000,cutoff:7300,calibrated:0,frames:240,target:-19,gr:3.2,latency:42,
+    raw:Array.from({length:32},(_,i)=>-40-i*1.2-(i>24?40:0)),voice:Array.from({length:32},(_,i)=>-45-i*1.5),autoEq:[{t:'ls',hz:100,q:0.8,g:-0.7},{t:'pk',hz:400,q:1.2,g:-4.7},{t:'pk',hz:5000,q:1.2,g:4.6}]})},100);
+}
+</script>
+</body>
+</html>

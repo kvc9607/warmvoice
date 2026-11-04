@@ -21,5 +21,7 @@ float referenceSpeechDb(float hz);
 
 // Centre frequencies of the fixed 10-band bank (for drawing).
 const float* eqBankCentres();
+// Shape of band k of the auto bank: type 0 low shelf, 1 peak, 2 high shelf.
+void eqBankBand(int k, int* type, float* hz, float* q);
 
 }  // namespace wv

@@ -61,6 +61,7 @@ static std::vector<Endpoint> listEndpoints() {
             if (SUCCEEDED(dev->GetId(&id))) { e.id = id; CoTaskMemFree(id); }
             const size_t dot = e.id.find_last_of(L'.');
             e.guid = dot == std::wstring::npos ? e.id : e.id.substr(dot + 1);
+            for (auto& ch : e.guid) ch = (wchar_t)towlower(ch);   // same spelling as the APO uses
             IPropertyStore* ps = nullptr;
             if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &ps))) {
                 PROPVARIANT v;

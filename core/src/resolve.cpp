@@ -148,6 +148,13 @@ float referenceSpeechDb(float hz) { return interpLog(kRef, (int)(sizeof(kRef) / 
 
 const float* eqBankCentres() { return kCentres; }
 
+void eqBankBand(int k, int* type, float* hz, float* q) {
+    k = clampv(k, 0, kEqBank - 1);
+    *type = kBank[k].type == BandType::LowShelf ? 0 : (kBank[k].type == BandType::HighShelf ? 2 : 1);
+    *hz = kBank[k].hz;
+    *q = kBank[k].q;
+}
+
 Resolved resolve(const UserParams& u, const Analysis& a, ResolveInfo* info) {
     Resolved r;
     const auto on = [&](Stage s) { return u.stageOn[(int)s] != 0; };

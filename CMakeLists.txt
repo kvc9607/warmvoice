@@ -38,4 +38,15 @@ add_dependencies(wvtests warmvoice_ai_mock)
 
 if(WIN32)
   add_subdirectory(apo)
+  # The settings app needs the WebView2 SDK (NuGet package Microsoft.Web.WebView2).
+  set(WEBVIEW2_DIR "" CACHE PATH "Unpacked Microsoft.Web.WebView2 NuGet package")
+  if(WEBVIEW2_DIR)
+    add_executable(WarmVoice WIN32 app/main.cpp)
+    target_include_directories(WarmVoice PRIVATE ${WEBVIEW2_DIR}/build/native/include)
+    target_link_libraries(WarmVoice PRIVATE wvcore ${WEBVIEW2_DIR}/build/native/x64/WebView2LoaderStatic.lib
+                          ole32 oleaut32 shell32 user32 advapi32 propsys version)
+    target_compile_definitions(WarmVoice PRIVATE UNICODE _UNICODE)
+    add_custom_command(TARGET WarmVoice POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/app/ui $<TARGET_FILE_DIR:WarmVoice>/ui)
+  endif()
 endif()

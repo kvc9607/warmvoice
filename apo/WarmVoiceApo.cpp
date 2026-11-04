@@ -211,8 +211,12 @@ private:
         if (!ps) return;
         PROPVARIANT v;
         PropVariantInit(&v);
-        if (SUCCEEDED(ps->GetValue(kPkeyEndpointGuid, &v)) && v.vt == VT_LPWSTR && v.pwszVal)
+        if (SUCCEEDED(ps->GetValue(kPkeyEndpointGuid, &v)) && v.vt == VT_LPWSTR && v.pwszVal) {
             endpointGuid_ = v.pwszVal;
+            // Object names are case-sensitive; the app and installer build the same name from
+            // the endpoint id, so everyone uses lower case.
+            for (auto& ch : endpointGuid_) ch = (wchar_t)towlower(ch);
+        }
         PropVariantClear(&v);
     }
 

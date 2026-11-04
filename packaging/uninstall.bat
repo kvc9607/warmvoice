@@ -6,6 +6,9 @@ if %errorlevel% neq 0 (
   exit /b
 )
 set DEST=%ProgramFiles%\WarmVoice
+taskkill /im WarmVoice.exe /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v WarmVoice /f >nul 2>&1
+del "%ProgramData%\Microsoft\Windows\Start Menu\Programs\WarmVoice.lnk" >nul 2>&1
 "%DEST%\wvinstall.exe" uninstall all
 echo The files stay in %DEST% until the next restart; you can delete that folder afterwards.
 pause
