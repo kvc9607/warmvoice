@@ -31,8 +31,10 @@ float interpLog(const Anchor* a, int n, float hz) {
 const Anchor kRef[] = {{63, -6}, {100, 2}, {160, 7}, {250, 9}, {400, 9}, {630, 6}, {800, 3}, {1000, 0},
                        {1250, -2}, {1600, -4.5f}, {2000, -7}, {2500, -9.5f}, {3150, -11}, {4000, -13},
                        {5000, -16.5f}, {6300, -19.5f}, {8000, -22}, {10000, -25}, {16000, -32}};
-const Anchor kWarm[] = {{50, 1}, {120, 2.5f}, {250, 2}, {500, 0.5f}, {1000, 0}, {2000, -0.5f},
-                        {3500, -1}, {6000, -0.5f}, {10000, 0.5f}, {16000, 1}};
+// "温暖" = a large-diaphragm condenser close up (Blue Yeti / desktop studio mic): body and
+// proximity warmth, a smooth (slightly recessed) presence range, open air on top.
+const Anchor kWarm[] = {{50, 1.5f}, {100, 4}, {160, 4.5f}, {250, 3.5f}, {400, 1.5f}, {700, 0.5f}, {1000, 0},
+                        {2000, -1}, {3200, -2}, {5000, -1.5f}, {8000, 1}, {12000, 2}, {16000, 2}};
 const Anchor kClear[] = {{50, -1.5f}, {120, -1}, {250, -1.5f}, {500, -0.5f}, {1000, 0}, {2000, 1},
                          {3500, 2.5f}, {6000, 2}, {10000, 2.5f}, {16000, 2}};
 
@@ -257,17 +259,21 @@ Resolved resolve(const UserParams& u, const Analysis& a, ResolveInfo* info) {
         }
         float mean = 0; int nm = 0;
         for (int b = 0; b < kBands; ++b) {
-            d[b] = w[b] * (d[b] + 0.5f * resid[b]);
+            // below 300 Hz the difference is mostly the microphone (headset mics are thin):
+            // correct most of it; above, keep half so the person still sounds like themselves
+            const float keep = L.centreHz[b] < 300.0f ? 0.8f : 0.5f;
+            d[b] = w[b] * (d[b] + keep * resid[b]);
             if (L.centreHz[b] >= 500 && L.centreHz[b] <= 2000) { mean += d[b]; ++nm; }
         }
         mean /= std::max(1, nm);   // overall loudness is the leveller's job, not the EQ's
         for (int b = 0; b < kBands; ++b) {
-            // Cutting sounds natural, boosting exposes noise and codec artefacts: cuts up to
-            // 6 dB, boosts only up to 3 dB (2 dB above 2 kHz), and nothing near the top of a
-            // narrow microphone.
+            // Cutting sounds natural. Boosting the low/middle range (body) is safe - the AI has
+            // already removed the noise there - but boosting the highs exposes codec artefacts
+            // and hiss: up to 9 dB from 100 to 500 Hz, 2 dB above 2 kHz, nothing near the top
+            // of a narrow microphone.
             const float hz = L.centreHz[b];
-            const float cut = hz < 200.0f ? 3.0f : 6.0f;
-            float boost = hz < 200.0f ? 2.0f : (hz > 2000.0f ? 2.0f : 3.0f);
+            const float cut = hz < 200.0f ? 4.0f : 6.0f;
+            float boost = hz < 100.0f ? 4.0f : hz <= 500.0f ? 9.0f : hz <= 1000.0f ? 5.0f : hz <= 2000.0f ? 3.0f : 2.0f;
             if (cutoff > 0.0f && hz > 0.7f * cutoff) boost = 0.0f;
             d[b] = w[b] * clampv(d[b] - mean, -cut, boost) * amt;
         }
